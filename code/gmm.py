@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.distributions as dist
 
 class GMM(nn.Module):
-
     def __init__(self, device, K, means_init, random_weights = False, n_features=2):
         super(GMM, self).__init__()
         self.device = device

@@ -1,33 +1,5 @@
 import torch
-import torch.distributions as dist
-
-def _gmm_params(gmm):
-    log_pi = torch.log_softmax(gmm.pi, dim=-1)          # (K,)
-    covs = []
-    for k in range(gmm.K):
-        L = torch.tril(gmm.chol_var[k])
-        covs.append(L @ L.t() + 1e-6 * torch.eye(gmm.n_features, device=gmm.device))
-    return log_pi, gmm.means, torch.stack(covs)          # (K,), (K,D), (K,D,D)
-
-
-def _component_posterior(x_obs, obs_idx, log_pi, means, covs):
-    log_post = log_pi.clone()
-    for k in range(len(log_pi)):
-        mvn = dist.MultivariateNormal(means[k][obs_idx], covs[k][obs_idx][:, obs_idx])
-        log_post[k] += mvn.log_prob(x_obs)
-    return (log_post - log_post.logsumexp(0)).exp()      # (K,)
-
-
-def _conditional_gaussian(k, x_obs, obs_idx, mis_idx, means, covs):
-    """p(x_miss | x_obs, component k) via Schur complement."""
-    mu, cov = means[k], covs[k]
-    cov_oo_inv = torch.linalg.inv(cov[obs_idx][:, obs_idx])
-    gain       = cov[mis_idx][:, obs_idx] @ cov_oo_inv
-    cond_mean  = mu[mis_idx] + gain @ (x_obs - mu[obs_idx])
-    cond_cov   = cov[mis_idx][:, mis_idx] - gain @ cov[obs_idx][:, mis_idx]
-    cond_cov   = (cond_cov + cond_cov.t()) / 2 + 1e-6 * torch.eye(len(mis_idx), device=mu.device)
-    return cond_mean, cond_cov
-
+from numpy.polynomial.hermite import hermgauss
 
 class MCBaseline:
     def __init__(self, gmm, n_samples=2000):
@@ -35,41 +7,45 @@ class MCBaseline:
         self.n_samples = n_samples
 
     @torch.no_grad()
-    def pred(self, x_test, missing_mask, w, b=0.0):
-        """x_test: (N,D), missing_mask: (N,D) bool. Returns (N,) expected sigmoid."""
-        log_pi, means, covs = _gmm_params(self.gmm)
-        probs = torch.zeros(len(x_test), device=self.gmm.device)
+    def forward(self, w, b=0.0):
+        samples = self.gmm.sample(self.n_samples)
+        logits = samples @ w + b
+        return float(torch.sigmoid(logits).mean())
 
-        for i, (x, mask) in enumerate(zip(x_test, missing_mask)):
-            obs_idx = (~mask).nonzero(as_tuple=True)[0]
-            mis_idx =   mask .nonzero(as_tuple=True)[0]
+    def __call__(self, w, b=0.0):
+        return self.forward(w, b)
 
-            if len(mis_idx) == 0:           # nothing missing
-                probs[i] = torch.sigmoid(w @ x + b)
-                continue
+class GaussHermiteBaseline:
+    def __init__(self, gmm, n_points=20):
+        self.gmm = gmm
 
-            post = _component_posterior(x[obs_idx], obs_idx, log_pi, means, covs)
-            k_samples = torch.multinomial(post, self.n_samples, replacement=True)
+        nodes, weights = hermgauss(n_points)
+        self.nodes   = torch.tensor(nodes,   dtype=torch.float32)
+        self.weights = torch.tensor(weights, dtype=torch.float32)
 
-            x_full = x.unsqueeze(0).repeat(self.n_samples, 1)
-            for k in range(self.gmm.K):
-                sel = (k_samples == k).nonzero(as_tuple=True)[0]
-                if len(sel) == 0:
-                    continue
-                cm, cc = _conditional_gaussian(k, x[obs_idx], obs_idx, mis_idx, means, covs)
-                x_full[sel[:, None], mis_idx] = dist.MultivariateNormal(cm, cc).sample((len(sel),))
+    @torch.no_grad()
+    def forward(self, w, b=0.0):
+        device = w.device
+        nodes   = self.nodes.to(device)    # (J,)
+        weights = self.weights.to(device)  # (J,)
 
-            probs[i] = torch.sigmoid(x_full @ w + b).mean()
-
-        return probs
+        pi = torch.softmax(self.gmm.pi, dim=-1)  # (K,)
 
 
-class MeanImputationBaseline:
-    def __init__(self, train_means):
-        self.train_means = torch.tensor(train_means, dtype=torch.float32) if not isinstance(train_means, torch.Tensor) else train_means
+        K = self.gmm.K
+        m = torch.zeros(K, device=device)
+        v = torch.zeros(K, device=device)
 
-    def pred(self, x_test, missing_mask, w, b=0.0):
-        means = self.train_means.to(x_test.device)
-        x_imp = x_test.clone()
-        x_imp[missing_mask] = means.expand_as(x_test)[missing_mask]
-        return torch.sigmoid(x_imp @ w + b)
+        for k in range(K):
+            L_k  = torch.tril(self.gmm.chol_var[k])                          # (D, D)
+            m[k] = w @ self.gmm.means[k] + b                                 # scalar
+            v[k] = (L_k.t() @ w).pow(2).sum()                               # scalar
+
+        z = m[:, None] + torch.sqrt(2 * v[:, None]) * nodes[None, :]        # (K, J)
+        component_expectations = (weights * torch.sigmoid(z)).sum(dim=1) \
+                                 / torch.tensor(torch.pi, device=device).sqrt()  # (K,)
+
+        return float((pi * component_expectations).sum())
+
+    def __call__(self, w, b=0.0):
+        return self.forward(w, b)
