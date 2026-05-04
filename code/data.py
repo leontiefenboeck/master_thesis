@@ -4,7 +4,6 @@ from sklearn.datasets import make_classification, make_moons
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
-
 class DataManager:
     def __init__(self, name, samples=1000, features=20, test_size=0.2, random_state=42):
         if name == 'sk_class':

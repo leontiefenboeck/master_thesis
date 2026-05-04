@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.distributions as dist
 
 class GMM(nn.Module):
-    def __init__(self, device, K, means_init, random_weights = False, n_features=2):
+    def __init__(self, device, K, means_init, random_weights=False, n_features=2):
         super(GMM, self).__init__()
         self.device = device
         self.K = K
@@ -11,59 +11,56 @@ class GMM(nn.Module):
 
         if random_weights:
             pi_init = torch.rand(K, dtype=torch.float32)  
-            self.pi = nn.Parameter(pi_init / pi_init.sum())
+            self.pi = nn.Parameter(pi_init)
         else:
-            self.pi = nn.Parameter(torch.ones(K) / K)
+            self.pi = nn.Parameter(torch.ones(K))
 
         self.means = nn.Parameter(means_init.clone().detach())
-        self.chol_var = nn.Parameter(torch.eye(n_features).repeat(K, 1, 1))
+        self.log_vars = nn.Parameter(torch.zeros(K, n_features))
+
+    def get_covariances(self):
+        variances = torch.exp(self.log_vars) + 1e-6
+        return torch.diag_embed(variances)
 
     def forward(self, x):
-        log_likelihoods = torch.zeros(x.size(0), self.K, device=x.device) 
+        weights_log_pdf = torch.log_softmax(self.pi, dim=-1)
+        variances = torch.exp(self.log_vars) + 1e-6
+        log_probs = dist.Normal(self.means, variances.sqrt()).log_prob(x.unsqueeze(1)).sum(dim=-1)
 
-        for k in range(self.K):
-            lower_triangular = torch.tril(self.chol_var[k])
-            var_k = lower_triangular @ lower_triangular.t() + 1e-6 * torch.eye(self.n_features, device=x.device)  
-            log_probs = dist.MultivariateNormal(self.means[k], var_k).log_prob(x)
-            log_likelihoods[:, k] = log_probs
+        weighted_log_probs = log_probs + weights_log_pdf
+        return torch.logsumexp(weighted_log_probs, dim=1)
 
-        weighted_log_likelihoods = log_likelihoods + torch.log_softmax(self.pi, dim=-1)
-        log_likelihood = torch.logsumexp(weighted_log_likelihoods, dim=1)
-
-        return log_likelihood
-
-    def log_likelihood(self, x):
-        with torch.no_grad():
-            if not isinstance(x, torch.Tensor):
-                x = torch.tensor(x)
-            return torch.mean(self(x)).item()
+    def characteristic_function(self, s):
+        weights = torch.softmax(self.pi, dim=-1)
+        variances = torch.exp(self.log_vars) + 1e-6 # [K, D]
         
+        linear_term = torch.matmul(s, self.means.T)
+        quad_term = torch.matmul(s**2, variances.T)
+        phi_components = torch.exp(1j * linear_term - 0.5 * quad_term)
+
+        return torch.sum(weights * phi_components, dim=-1)
+
     def sample(self, num_samples):
-        cat_dist = dist.Categorical(torch.softmax(self.pi, dim=-1))
-        component_indices = cat_dist.sample((num_samples,))
+        with torch.no_grad():
+            weights = torch.softmax(self.pi, dim=-1)
+            cat_dist = dist.Categorical(weights)
+            indices = cat_dist.sample((num_samples,))
 
-        samples = torch.zeros(num_samples, self.n_features, device=self.device)  
-        for k in range(self.K): 
-            mask = (component_indices == k)
-            num_component_samples = mask.sum()
+            eps = torch.randn(num_samples, self.n_features, device=self.device)
             
-            if num_component_samples > 0:
-                var_k = self.chol_var[k] @ self.chol_var[k].t() + 1e-6 * torch.eye(self.n_features, device=self.device)  
-                component_samples = dist.MultivariateNormal(self.means[k].float(), var_k.float()).sample((num_component_samples,))
-                samples[mask] = component_samples
+            m = self.means[indices]
+            s = torch.exp(0.5 * self.log_vars[indices])
+            
+            return m + eps * s
 
-        return samples
-        
     def fit(self, loader, epochs=50, lr=0.01):
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        for _ in range(epochs):
-            for i, batch in enumerate(loader):
-                if isinstance(batch, (tuple, list)):
-                    batch = batch[0]
+        for epoch in range(epochs):
+            for batch in loader:
+                if isinstance(batch, (tuple, list)): batch = batch[0]
                 batch = batch.to(self.device)
 
-                log_likelihoods = self(batch)
-                loss = -torch.mean(log_likelihoods)
+                loss = -torch.mean(self(batch))
 
                 optimizer.zero_grad()
                 loss.backward()

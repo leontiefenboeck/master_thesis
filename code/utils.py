@@ -73,79 +73,78 @@ def plot_data(X, y=None, title=None, xlabel='Feature 1', ylabel='Feature 2'):
     plt.savefig(f'figures/{filename}')
     plt.close()
 
-def plot_gmm_results(gmm_model, X, title=None):
-    # Predict cluster assignments
+def plot_gmm_results(gmm_model, X, title=None, num_samples=1000):
     with torch.no_grad():
         X_tensor = torch.tensor(X, dtype=torch.float32).to(gmm_model.device)
-        log_likelihoods = torch.zeros(X_tensor.size(0), gmm_model.K, device=X_tensor.device)
-        for k in range(gmm_model.K):
-            lower_triangular = torch.tril(gmm_model.chol_var[k])
-            var_k = lower_triangular @ lower_triangular.t() + 1e-6 * torch.eye(gmm_model.n_features, device=X_tensor.device)
-            log_probs = torch.distributions.MultivariateNormal(gmm_model.means[k], var_k).log_prob(X_tensor)
-            log_likelihoods[:, k] = log_probs
-        weighted_log_likelihoods = log_likelihoods + torch.log_softmax(gmm_model.pi, dim=-1)
-        clusters = torch.argmax(weighted_log_likelihoods, dim=1).cpu().numpy()
+        variances = torch.exp(gmm_model.log_vars) + 1e-6
+        log_probs = torch.distributions.Normal(gmm_model.means, variances.sqrt()).log_prob(X_tensor.unsqueeze(1)).sum(dim=-1)
+        weighted_log_probs = log_probs + torch.log_softmax(gmm_model.pi, dim=-1)
+        clusters = torch.argmax(weighted_log_probs, dim=1).cpu().numpy()
 
-    plt.figure(figsize=(6, 6))
-    scatter = plt.scatter(X[:, 0], X[:, 1], c=clusters, cmap='tab10', alpha=0.7)
-    plt.colorbar(scatter, label='Cluster')
-    plt.xlabel('Feature 1')
-    plt.ylabel('Feature 2')
-    if title:
-        plt.title(title)
-    plt.axis('equal')
-    filename = title.replace(' ', '_') + '_clusters.png' if title else 'gmm_clusters.png'
+    samples = gmm_model.sample(num_samples).cpu().numpy()
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    
+    axes[0].scatter(X[:, 0], X[:, 1], c=clusters, cmap='tab10', alpha=0.5, s=15)
+    axes[0].set_title(f"Real Data: Learned Clusters\n({title if title else ''})")
+    axes[0].set_xlabel('Feature 1')
+    axes[0].set_ylabel('Feature 2')
+    axes[0].axis('equal')
+
+    axes[1].scatter(samples[:, 0], samples[:, 1], color='crimson', alpha=0.4, s=15)
+    axes[1].set_title(f"Generated Samples\n(What the GMM 'sees')")
+    axes[1].set_xlabel('Feature 1')
+    axes[1].set_ylabel('Feature 2')
+    axes[1].axis('equal')
+
+    os.makedirs('figures', exist_ok=True)
+    filename = title.replace(' ', '_') + '_combined.png' if title else 'gmm_combined.png'
+    plt.tight_layout()
     plt.savefig(f'figures/{filename}')
     plt.close()
 
-    # Plot GMM density contours
     def gmm_density(xy):
         with torch.no_grad():
             return torch.exp(gmm_model(xy.to(gmm_model.device)))
 
     plot_2D(gmm_density, title=f'GMM Density Contours - {title}' if title else 'GMM Density Contours')
 
-def plot_logistic_correctness(clf, X, y, title=None):
+def plot_classifier_results(clf, X, y, title="Logistic Regression"):
+    x_min, x_max = X[:, 0].min() - 0.5, X[:, 0].max() + 0.5
+    y_min, y_max = X[:, 1].min() - 0.5, X[:, 1].max() + 0.5
+    xx, yy = np.meshgrid(np.linspace(x_min, x_max, 200),
+                         np.linspace(y_min, y_max, 200))
+    
+    grid_points = np.c_[xx.ravel(), yy.ravel()]
+    probs = clf.predict_proba(grid_points)[:, 1].reshape(xx.shape)
+    
     y_pred = clf.predict(X)
-    correctness = (y == y_pred).astype(int)  # 1 for correct, 0 for incorrect
+    correct = (y_pred == y)
 
-    x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
-    y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
-    xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.01),
-                         np.arange(y_min, y_max, 0.01))
-    Z = clf.predict(np.c_[xx.ravel(), yy.ravel()])
-    Z = Z.reshape(xx.shape)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    plt.figure(figsize=(6, 6))
-    plt.contourf(xx, yy, Z, alpha=0.4, cmap='viridis')
-    scatter = plt.scatter(X[:, 0], X[:, 1], c=correctness, cmap='RdYlGn', edgecolor='k', alpha=0.7)
-    plt.colorbar(scatter, label='Correctly Classified (1=Yes, 0=No)')
-    plt.xlabel('Feature 1')
-    plt.ylabel('Feature 2')
-    if title:
-        plt.title(title)
-    plt.axis('equal')
-    filename = title.replace(' ', '_') + '.png' if title else 'logistic_correctness.png'
-    plt.savefig(f'figures/{filename}')
-    plt.close()
+    contour = axes[0].contourf(xx, yy, probs, alpha=0.8, cmap='RdYlBu_r', levels=20)
+    axes[0].scatter(X[:, 0], X[:, 1], c=y, edgecolor='k', cmap='viridis', s=30, alpha=0.8)
+    axes[0].set_title(f"{title}: Probabilities")
+    fig.colorbar(contour, ax=axes[0], label='P(class=1)')
 
-def plot_logistic_probabilities(clf, X, y, title=None):
-    x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
-    y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
-    xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.01),
-                         np.arange(y_min, y_max, 0.01))
-    Z = clf.predict_proba(np.c_[xx.ravel(), yy.ravel()])[:, 1]
-    Z = Z.reshape(xx.shape)
+    axes[1].contour(xx, yy, probs, levels=[0.5], colors='black', linewidths=2)
+    
+    axes[1].scatter(X[correct, 0], X[correct, 1], c='green', label='Correct', alpha=0.6, s=25)
+    axes[1].scatter(X[~correct, 0], X[~correct, 1], c='red', label='Incorrect', marker='x', s=50)
+    
+    axes[1].set_title(f"{title}: Hits vs Misses")
+    axes[1].legend()
 
-    plt.figure(figsize=(6, 6))
-    plt.contourf(xx, yy, Z, alpha=0.8, cmap='RdYlBu_r', levels=20)
-    scatter = plt.scatter(X[:, 0], X[:, 1], c=y, edgecolor='k', cmap='viridis', alpha=0.7)
-    plt.colorbar(scatter, label='True Label')
-    plt.xlabel('Feature 1')
-    plt.ylabel('Feature 2')
-    if title:
-        plt.title(title)
-    plt.axis('equal')
-    filename = title.replace(' ', '_') + '.png' if title else 'logistic_probabilities.png'
+    for ax in axes:
+        ax.set_xlabel('Feature 1')
+        ax.set_ylabel('Feature 2')
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_aspect('equal')
+
+    os.makedirs('figures', exist_ok=True)
+    filename = f"{title.lower().replace(' ', '_')}_results.png"
+    plt.tight_layout()
     plt.savefig(f'figures/{filename}')
     plt.close()
