@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import torch.distributions as dist
 
 # TODO: what if missing data - conditional?
 class MCBaseline:
@@ -8,13 +9,42 @@ class MCBaseline:
         self.n_samples = n_samples
 
     @torch.no_grad()
-    def forward(self, w):
+    def marg(self, w):
         samples = self.model.sample(self.n_samples)
         logits = samples @ w
         return float(torch.sigmoid(logits).mean())
 
-    def __call__(self, w):
-        return self.forward(w)
+    @torch.no_grad()
+    def cond(self, w, x_partial):
+        w = w.to(self.model.device)
+        x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.model.device)
+        observed_mask = ~torch.isnan(x_partial)
+        missing_mask = ~observed_mask
+
+        if observed_mask.all():
+            logits = (w * x_partial).sum()
+            return float(torch.sigmoid(logits).item())
+
+        component_weights = self.model.conditional_mixture_weights(x_partial, observed_mask)
+        cat_dist = dist.Categorical(component_weights)
+        indices = cat_dist.sample((self.n_samples,))
+
+        component_means = self.model.means[indices]
+        component_vars = torch.exp(self.model.log_vars[indices]) + 1e-6
+
+        if missing_mask.sum() > 0:
+            mu_miss = component_means[:, missing_mask]
+            sigma_miss = component_vars[:, missing_mask].sqrt()
+            noise = torch.randn(self.n_samples, missing_mask.sum(), device=self.model.device)
+            samples_miss = mu_miss + noise * sigma_miss
+
+            x_full = x_partial.unsqueeze(0).repeat(self.n_samples, 1)
+            x_full[:, missing_mask] = samples_miss
+        else:
+            x_full = x_partial.unsqueeze(0).repeat(self.n_samples, 1)
+
+        logits = x_full @ w
+        return float(torch.sigmoid(logits).mean().item())
 
 class GaussHermiteBaseline:
     def __init__(self, gmm, n_points=20):
@@ -25,7 +55,7 @@ class GaussHermiteBaseline:
         self.weights = torch.tensor(weights, dtype=torch.float32)
 
     @torch.no_grad()
-    def forward(self, w):
+    def marg(self, w):
         device = w.device
         nodes   = self.nodes.to(device)    # (J,)
         weights = self.weights.to(device)  # (J,)
@@ -48,6 +78,3 @@ class GaussHermiteBaseline:
                                  / torch.sqrt(torch.tensor(torch.pi, device=device))  # (K,)
 
         return float((pi * component_expectations).sum())
-
-    def __call__(self, w):
-        return self.forward(w)

@@ -18,26 +18,58 @@ class PCPG:
         omega = random_polyagamma(1.0, np.zeros(n_samples), random_state=self.seed)
         return torch.tensor(omega, dtype=torch.float32, device=self.model.device)
 
-    @torch.no_grad()
-    def forward(self, w):
+    def _prepare_partial_input(self, x_partial):
+        if not torch.is_tensor(x_partial):
+            x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.model.device)
+        else:
+            x_partial = x_partial.to(self.model.device)
+
+        observed_mask = ~torch.isnan(x_partial)
+        return x_partial, observed_mask
+
+    def _evaluate_pg_expectation(self, w, shift=0.0, component_weights=None):
+        w = w.to(self.model.device)
         omegas = self.sample_pg(self.n_pg)          # (n_pg,)
         t = 0.5
 
-        factor_term = torch.exp(t**2 / (2 * omegas)) / torch.tensor(torch.pi, device=omegas.device).sqrt()
-        exp_term = torch.exp(-1j * self.nodes * t * torch.sqrt(2.0 / omegas).unsqueeze(1))      # (n_pg, n_hermite)
+        if isinstance(shift, torch.Tensor):
+            shift = shift.to(omegas.device)
+        else:
+            shift = torch.tensor(float(shift), dtype=torch.float32, device=omegas.device)
 
-        # TODO: where to put w
+        a = t - omegas * shift
+        factor_term = torch.exp(t * shift - 0.5 * omegas * shift**2 + a**2 / (2.0 * omegas))
+        factor_term = factor_term / torch.sqrt(torch.tensor(torch.pi, device=omegas.device))
+
         s = torch.sqrt(2.0 * omegas).unsqueeze(1) * self.nodes               # (n_pg, n_hermite)
-        s_vector = s.unsqueeze(-1) * w                                       # (n_pg, n_hermite, d)
+        s_vector = s.unsqueeze(-1) * w                                         # (n_pg, n_hermite, d)
 
-        phi = self.model.characteristic_function(s_vector)
+        phi = self.model.characteristic_function(s_vector, weights=component_weights)
 
-        integrand = self.weights * exp_term * phi                            # (n_pg, n_hermite)
-        g = factor_term * integrand.sum(dim=-1)                              # (n_pg,)
+        exp_term = torch.exp(-1j * self.nodes * a.unsqueeze(1) * torch.sqrt(2.0 / omegas).unsqueeze(1))
+        integrand = self.weights.to(phi.device) * exp_term * phi              # (n_pg, n_hermite)
+        g = factor_term * integrand.sum(dim=-1)                               # (n_pg,)
 
         return 0.5 * g.real.mean()
 
-    def __call__(self, w):
-        return self.forward(w)
+    @torch.no_grad()
+    def marg(self, w):
+        return self._evaluate_pg_expectation(w)
+
+    @torch.no_grad()
+    def cond(self, w, x_partial):
+        x_partial, observed_mask = self._prepare_partial_input(x_partial)
+        if observed_mask.all():
+            return float(torch.sigmoid((w.to(self.model.device) * x_partial).sum()).item())
+
+        missing_mask = ~observed_mask
+        shift = (w.to(self.model.device)[observed_mask] * x_partial[observed_mask]).sum()
+
+        w_projected = torch.zeros_like(w, device=self.model.device)
+        w_projected[missing_mask] = w.to(self.model.device)[missing_mask]
+
+        component_weights = self.model.conditional_mixture_weights(x_partial, observed_mask)
+        return self._evaluate_pg_expectation(w_projected, shift=shift, component_weights=component_weights)
+
 
  

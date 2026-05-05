@@ -10,11 +10,17 @@ import torch
 import random
 import numpy as np
 
-def evaluate(name, method, w):
+def evaluate(name, m, w):
     t0 = time.perf_counter()
-    expectation = method(w)
+    expectation = m.marg(w)
     t = time.perf_counter() - t0
     print(f"{name:<10} expectation={expectation:.4f} | t={t:.2f}s")
+
+def evaluate_conditional(name, m, w, x_partial):
+    t0 = time.perf_counter()
+    expectation = m.cond(w, x_partial)
+    t = time.perf_counter() - t0
+    print(f"{name:<15} expectation={expectation:.4f} | t={t:.2f}s")
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -59,5 +65,10 @@ mc   = MCBaseline(px, n_samples=1000)
 evaluate("MC",     mc, w)
 evaluate("PCPG",   pcpg, w)
 evaluate("GH-20",  gh, w)
+
+x_partial_tensor = dm.get_test_missing(missing_rate=0.5)[0][0]  
+
+evaluate_conditional("ConditionalMC", mc, w, x_partial_tensor)
+evaluate_conditional("PCPG Conditional", pcpg, w, x_partial_tensor)
 
 

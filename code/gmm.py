@@ -22,6 +22,41 @@ class GMM(nn.Module):
         variances = torch.exp(self.log_vars) + 1e-6
         return torch.diag_embed(variances)
 
+    def conditional_component_log_weights(self, x_partial, observed_mask):
+        if not torch.is_tensor(x_partial):
+            x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.device)
+        else:
+            x_partial = x_partial.to(self.device)
+
+        observed_mask = torch.as_tensor(observed_mask, dtype=torch.bool, device=self.device)
+        if observed_mask.numel() != self.n_features:
+            observed_mask = observed_mask.view(self.n_features)
+
+        base_log_weights = torch.log_softmax(self.pi, dim=-1)
+        if observed_mask.sum() == 0:
+            return base_log_weights
+
+        x_obs = x_partial[observed_mask]
+        mu_obs = self.means[:, observed_mask]
+        var_obs = torch.exp(self.log_vars)[:, observed_mask] + 1e-6
+        log_pdf_obs = dist.Normal(mu_obs, var_obs.sqrt()).log_prob(x_obs).sum(dim=-1)
+
+        return torch.log_softmax(base_log_weights + log_pdf_obs, dim=-1)
+
+    def conditional_mixture_weights(self, x_partial, observed_mask):
+        return torch.softmax(self.conditional_component_log_weights(x_partial, observed_mask), dim=-1)
+
+    def characteristic_function(self, s, weights=None):
+        if weights is None:
+            weights = torch.softmax(self.pi, dim=-1)
+        variances = torch.exp(self.log_vars) + 1e-6
+
+        linear_term = torch.matmul(s, self.means.T)
+        quad_term = torch.matmul(s**2, variances.T)
+        phi_components = torch.exp(1j * linear_term - 0.5 * quad_term)
+
+        return torch.sum(weights * phi_components, dim=-1)
+
     def forward(self, x):
         weights_log_pdf = torch.log_softmax(self.pi, dim=-1)
         variances = torch.exp(self.log_vars) + 1e-6
@@ -29,16 +64,6 @@ class GMM(nn.Module):
 
         weighted_log_probs = log_probs + weights_log_pdf
         return torch.logsumexp(weighted_log_probs, dim=1)
-
-    def characteristic_function(self, s):
-        weights = torch.softmax(self.pi, dim=-1)
-        variances = torch.exp(self.log_vars) + 1e-6 # [K, D]
-        
-        linear_term = torch.matmul(s, self.means.T)
-        quad_term = torch.matmul(s**2, variances.T)
-        phi_components = torch.exp(1j * linear_term - 0.5 * quad_term)
-
-        return torch.sum(weights * phi_components, dim=-1)
 
     def sample(self, num_samples):
         with torch.no_grad():
