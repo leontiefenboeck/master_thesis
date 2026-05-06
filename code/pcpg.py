@@ -18,13 +18,13 @@ class PCPG:
         omega = random_polyagamma(1.0, np.zeros(n_samples), random_state=self.seed)
         return torch.tensor(omega, dtype=torch.float32, device=self.model.device)
 
-    def pg_expectation(self, w, shift=0.0, component_weights=None):
+    def pg_expectation(self, w, known=0.0, component_weights=None):
         w = w.to(self.model.device)
         omegas = self.sample_pg(self.n_pg)          # (n_pg,)
         t = 0.5
 
-        a = t - omegas * shift
-        factor_term = torch.exp(t * shift - 0.5 * omegas * shift**2 + a**2 / (2.0 * omegas))
+        a = t - omegas * known
+        factor_term = torch.exp(t * known - 0.5 * omegas * known**2 + a**2 / (2.0 * omegas))
         factor_term = factor_term / torch.sqrt(torch.tensor(torch.pi, device=omegas.device))
 
         s = torch.sqrt(2.0 * omegas).unsqueeze(1) * self.nodes               # (n_pg, n_hermite)
@@ -45,19 +45,20 @@ class PCPG:
     @torch.no_grad()
     def cond(self, w, x_partial):
         x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.model.device)
+        w = torch.as_tensor(w, dtype=torch.float32, device=self.model.device)
         observed_mask = ~torch.isnan(x_partial)
 
         if observed_mask.all():
-            return float(torch.sigmoid((w.to(self.model.device) * x_partial).sum()).item())
+            return float(torch.sigmoid((w * x_partial).sum()).item())
 
         missing_mask = ~observed_mask
-        shift = (w.to(self.model.device)[observed_mask] * x_partial[observed_mask]).sum()
+        known = (w[observed_mask] * x_partial[observed_mask]).sum()
 
         w_projected = torch.zeros_like(w, device=self.model.device)
-        w_projected[missing_mask] = w.to(self.model.device)[missing_mask]
+        w_projected[missing_mask] = w[missing_mask]
 
         component_weights = self.model.conditional_mixture_weights(x_partial, observed_mask)
-        return self.pg_expectation(w_projected, shift=shift, component_weights=component_weights)
+        return self.pg_expectation(w_projected, known=known, component_weights=component_weights)
 
 
  
