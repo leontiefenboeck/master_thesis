@@ -80,7 +80,7 @@ class GMM(nn.Module):
 
     def fit(self, loader, epochs=50, lr=0.01):
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        for epoch in range(epochs):
+        for _ in range(epochs):
             for batch in loader:
                 if isinstance(batch, (tuple, list)): batch = batch[0]
                 batch = batch.to(self.device)

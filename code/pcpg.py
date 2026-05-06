@@ -18,24 +18,10 @@ class PCPG:
         omega = random_polyagamma(1.0, np.zeros(n_samples), random_state=self.seed)
         return torch.tensor(omega, dtype=torch.float32, device=self.model.device)
 
-    def _prepare_partial_input(self, x_partial):
-        if not torch.is_tensor(x_partial):
-            x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.model.device)
-        else:
-            x_partial = x_partial.to(self.model.device)
-
-        observed_mask = ~torch.isnan(x_partial)
-        return x_partial, observed_mask
-
-    def _evaluate_pg_expectation(self, w, shift=0.0, component_weights=None):
+    def pg_expectation(self, w, shift=0.0, component_weights=None):
         w = w.to(self.model.device)
         omegas = self.sample_pg(self.n_pg)          # (n_pg,)
         t = 0.5
-
-        if isinstance(shift, torch.Tensor):
-            shift = shift.to(omegas.device)
-        else:
-            shift = torch.tensor(float(shift), dtype=torch.float32, device=omegas.device)
 
         a = t - omegas * shift
         factor_term = torch.exp(t * shift - 0.5 * omegas * shift**2 + a**2 / (2.0 * omegas))
@@ -54,11 +40,13 @@ class PCPG:
 
     @torch.no_grad()
     def marg(self, w):
-        return self._evaluate_pg_expectation(w)
+        return self.pg_expectation(w)
 
     @torch.no_grad()
     def cond(self, w, x_partial):
-        x_partial, observed_mask = self._prepare_partial_input(x_partial)
+        x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.model.device)
+        observed_mask = ~torch.isnan(x_partial)
+
         if observed_mask.all():
             return float(torch.sigmoid((w.to(self.model.device) * x_partial).sum()).item())
 
@@ -69,7 +57,7 @@ class PCPG:
         w_projected[missing_mask] = w.to(self.model.device)[missing_mask]
 
         component_weights = self.model.conditional_mixture_weights(x_partial, observed_mask)
-        return self._evaluate_pg_expectation(w_projected, shift=shift, component_weights=component_weights)
+        return self.pg_expectation(w_projected, shift=shift, component_weights=component_weights)
 
 
  
