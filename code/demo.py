@@ -20,12 +20,12 @@ torch.cuda.manual_seed_all(seed)
 # for data
 num_samples  = 10000
 num_features = 15
-obs_idx = 5
+obs_idx = 100
 
 # for models
 K         = 4
-n_mc      = 10000
-n_pg      = 100
+n_mc      = 100000
+n_pg      = 1000
 n_gauss   = 100
 n_hermite = 30
 
@@ -66,3 +66,12 @@ evaluate("PCPG-GH", pcpg_gh,  w, x_partial)
 
 # TODO
 # - how can I compare in high dim settings
+# mc approximate the tricks to check
+# pcpg in log domain maybe
+# pg sample change per runs
+# lot of samples to see if converge to same thing
+# see if pg can be other than mc sampled 
+# test against same x without missing vals
+# check variances
+# how to learn with missing data
+# why is monte carlo not enough, what is the upside of our approach?
