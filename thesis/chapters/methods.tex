@@ -1,0 +1,344 @@
+\chapter{Methods}
+\label{cha:methods}
+
+\section{Core Idea}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\PG}{\mathrm{PG}}
+\newcommand{\xo}{x^o}
+\newcommand{\xm}{x^m}
+
+\subsection{Setup} Consider a logistic regression, with missing features in the observation.\\ 
+Let $x := (\xo, \xm) \in \R^{d}$. Then the logistic regression is defined as
+\[
+  p(y \mid x) := \sigma (w^T x), \qquad w \in \R^{d}.
+\]
+Additionally we have a PC that models the density $p(x)$.
+
+\subsection{Goal} Compute the prediction in a probabilistically principled manner using
+\[
+  p(y \mid \xo) := \E_{p(\xm \mid \xo)} \left[\sigma \left( w^T x \right) \right].
+\]
+
+If it were not for the non-linear sigmoid function $\sigma$, we would be able to calculate this in a smooth 
+and decomposable PC, by pulling the Expectation -which is linear- into the leaf nodes. To tackle this we propose to use two tricks.
+
+\subsection{Trick 1: Pólya-Gamma}
+
+To replace the sigmoid function we use the PG-Sigmoid identity, shown in \cite{polyagamma}, that states:
+
+\[
+  \sigma(z) = \frac{1}{2} \exp \left(\frac{1}{2}z\right) \
+  \E_{\gamma \sim \PG(1,0)} \left[\exp \left(-\frac{1}{2} \gamma z^2 \right)\right]
+\]
+for $z \in \R$.
+
+If we set $z := w^T x$, and insert into our expectation, we get:
+\begin{align*}
+  p(y \mid \xo)
+  & = \E_{p(\xm \mid \xo)} \left[\sigma(z)\right] \\
+  & = \E_{p(\xm \mid \xo)} \left[
+       \frac{1}{2}\exp \left(\frac{1}{2}z\right)
+       \E_{\gamma \sim \PG(1,0)} \left[\exp \left(-\frac{1}{2}\gamma z^2 \right)\right]
+     \right] \\
+  & = \frac{1}{2} \E_{p(\xm \mid \xo)} \E_{\gamma \sim \PG(1,0)}
+    \left[ \exp \left(\frac{1}{2}z - \frac{1}{2}\gamma z^2 \right) \right]
+\end{align*}
+
+Now, we have a term without a sigmoid, but the $x$ still appears in a quadratic form.
+
+\subsection{Trick 2: Hubbard-Stratonovich (HS)}
+
+To get rid of the quadratic form, we apply the Hubbard--Stratonovich identity \cite{stratonovich1957, hubbard1959}, that states:
+
+\begin{equation}
+    \exp \left( -\tfrac{1}{2} a h^2 \right) = \sqrt{  \frac{1}{2 \pi a}} \int_{-\infty}^{\infty} \exp \left(-\frac{u^2}{2a} -i h u\right) \mathrm{d}u,
+\end{equation}
+
+In plain words, it makes a quadratic term linear at the cost of introducing a helper variable that we need to integrate over.
+
+Currently, in our term, $x$ appears quadratically as well as linearly. To be able to apply HS, we complete the square (again using $z = w^T x$):
+
+\begin{align}
+  \frac{1}{2}z - \frac{1}{2}\gamma z^2
+  &= -\frac{1}{2}\gamma \left(z^2 - \frac{z}{\gamma}\right) \notag\\
+  &= -\frac{1}{2}\gamma \left(\left(z - \frac{1}{2\gamma}\right)^{2} - \frac{1}{4\gamma^2}\right) \notag\\
+  &= -\frac{1}{2}\gamma \left(z - \frac{1}{2\gamma}\right)^{2} + \frac{1}{2}\gamma \cdot \frac{1}{4\gamma^2} \notag\\
+  &= -\frac{1}{2}\gamma \left(z - \frac{1}{2\gamma}\right)^{2} + \frac{1}{8\gamma}.
+\end{align}
+
+Now we apply HS with $a = \gamma$ and $h = z - \frac{1}{2\gamma}$:
+
+\begin{align}
+  \exp \left(\frac{1}{2}z - \frac{1}{2}\gamma z^2 \right)
+  &= \exp \left(\frac{1}{8\gamma}\right) \exp \left(-\frac{1}{2} \gamma \left(z - \frac{1}{2\gamma}\right)^{2} \right) \notag \\
+  &= \exp \left(\frac{1}{8\gamma}\right) \sqrt{\frac{1}{2\pi\gamma}} \int_{-\infty}^{\infty} \exp \left(-\frac{u^2}{2\gamma} - i \left(z - \frac{1}{2\gamma}\right) u\right) \mathrm{d}u\notag \\
+  &= \exp \left(\frac{1}{8\gamma}\right) \int_{-\infty}^{\infty} \underbrace{\frac{1}{\sqrt{2\pi\gamma}} \exp \left(-\frac{u^2}{2\gamma}\right)}_{\mathcal{N}(u; 0, \gamma)} \exp \left(-i \left(z - \frac{1}{2\gamma}\right) u \right) \mathrm{d}u \notag \\
+  &= \exp \left(\frac{1}{8\gamma}\right) \E_{u \sim \mathcal{N}(0, \gamma)} \left[ \exp \left(-i \left(z - \frac{1}{2\gamma}\right) u \right) \right] \notag \\
+  &= \exp \left(\frac{1}{8\gamma}\right) \E_{u \sim \mathcal{N}(0, \gamma)} \left[ \exp \left(\frac{iu}{2\gamma} - izu \right) \right]
+\end{align}
+
+Substituting back into $p(y \mid \xo)$, we get:
+
+\begin{align*}
+  p(y \mid \xo)
+  &= \frac{1}{2} \E_{p(\xm \mid \xo)} \E_{\gamma \sim \PG(1,0)}
+     \left[ \exp \left(\frac{1}{2}z - \frac{1}{2}\gamma z^2 \right) \right] \\
+  &= \frac{1}{2} \E_{p(\xm \mid \xo)} \E_{\gamma \sim \PG(1,0)}
+     \left[ \exp \left(\frac{1}{8\gamma}\right) \E_{u \sim \mathcal{N}(0, \gamma)}
+     \left[ \exp \left(\frac{iu}{2\gamma} - izu \right) \right] \right] \\
+  &= \frac{1}{2} \E_{\gamma \sim \PG(1,0)} \E_{u \sim \mathcal{N}(0, \gamma)}
+     \left[ \exp \left(\frac{1 + 4iu}{8\gamma}\right)
+     \E_{p(\xm \mid \xo)} \left[ \exp \left(-izu \right) \right] \right]
+\end{align*}
+
+\subsection{Characteristic Function}
+
+The characteristic function of a random variable $X$ is defined as $\phi_X(s) = \E \left[ \exp(isX) \right]$.
+The innermost expectation is only over $\xm$, with $\xo$ fixed, so we split $z = w^T x$ into its observed and missing parts:
+\[
+  z = w^T x = w_o^T \xo + w_m^T \xm.
+\]
+The $\xo$ part is constant under $\E_{p(\xm \mid \xo)}$ and factors out:
+\begin{align*}
+  \E_{p(\xm \mid \xo)} \left[ \exp(-izu) \right]
+  &= \E_{p(\xm \mid \xo)} \left[ \exp\left(-i(w_o^T \xo + w_m^T \xm)u\right) \right] \\
+  &= \exp\left(-iw_o^T \xo u\right) \cdot \E_{p(\xm \mid \xo)} \left[ \exp\left(-iw_m^T \xm u\right) \right] \\
+  &= \exp\left(-iw_o^T \xo u\right) \cdot \phi_{\xm \mid \xo}(-uw_m)
+\end{align*}
+So the input to the characteristic function is $s := -uw_m$.
+
+\subsection{Full Formula}
+
+Plugging the result of the previous subsection back into the outer
+expression for $p(y \mid \xo)$, we obtain:
+\begin{align*}
+  p(y \mid \xo)
+  &= \frac{1}{2} \E_{\gamma \sim \PG(1,0)} \E_{u \sim \mathcal{N}(0, \gamma)}
+     \left[ \exp \left(\frac{1 + 4iu}{8\gamma}\right)
+     \cdot \exp\left(-iw_o^T \xo u\right) \cdot \phi_{\xm \mid \xo}(-uw_m) \right] \\
+  &= \frac{1}{2} \E_{\gamma \sim \PG(1,0)} \E_{u \sim \mathcal{N}(0, \gamma)}
+     \left[ \exp \left(\frac{1}{8\gamma} + \frac{iu}{2\gamma} - iw_o^T \xo u\right)
+     \cdot \phi_{\xm \mid \xo}(-uw_m) \right] \\
+  &= \frac{1}{2} \E_{\gamma \sim \PG(1,0)} \E_{u \sim \mathcal{N}(0, \gamma)}
+     \left[ \exp \left(\frac{1}{8\gamma} + iu \left(\frac{1}{2\gamma} - w_o^T \xo\right)\right)
+     \cdot \phi_{\xm \mid \xo}(-uw_m) \right]
+\end{align*}
+
+We propose this as a final expression that we can tractably evaluate.
+
+\section{Implementation}
+
+Two ingredients are still abstract in the formula above: the conditional
+characteristic function $\phi_{\xm \mid \xo}$, which depends on the
+density model, and the inner $\mathcal{N}(0, \gamma)$ expectation, which
+needs to be approximated. This section makes both concrete.
+
+\subsection{Conditional CF for a GMM}
+
+For a Gaussian mixture model $p(x) = \sum_{k=1}^{K} \pi_k \,
+\mathcal{N}(x; \mu_k, \Sigma_k)$ with diagonal covariances $\Sigma_k =
+\mathrm{diag}(\sigma_k^2)$, the conditional density $p(\xm \mid \xo)$ is
+again a mixture, with the same component shapes restricted to the missing
+coordinates and reweighted by the posterior responsibility of each
+component given $\xo$:
+\[
+  \tilde{\pi}_k(\xo) = \frac{\pi_k \, \mathcal{N}(\xo; \mu_k^o, \Sigma_k^o)}{\sum_{j=1}^{K} \pi_j \, \mathcal{N}(\xo; \mu_j^o, \Sigma_j^o)}.
+\]
+Since the characteristic function of $\mathcal{N}(\mu, \Sigma)$ at $s$ is
+$\exp \left( i s^T \mu - \tfrac{1}{2} s^T \Sigma s \right)$, and the CF of
+a mixture is the same convex combination of component CFs, we get a
+closed-form expression:
+\[
+  \phi_{\xm \mid \xo}(s) = \sum_{k=1}^{K} \tilde{\pi}_k(\xo) \,
+  \exp \left( i s^T \mu_k^m - \tfrac{1}{2} s^T \Sigma_k^m s \right),
+\]
+where $\mu_k^m, \Sigma_k^m$ are the component means and covariances
+restricted to the missing coordinates.
+
+\subsection{Conditional CF for a General PC}
+
+More generally, any smooth and decomposable probabilistic circuit admits
+the conditional CF in closed form by recursive evaluation, since
+$\phi_X(s) = \E[\exp(is^T X)]$ is itself an expectation of a function
+that factorises over disjoint variable scopes, and PCs are by
+construction tractable for exactly this kind of expectation. Concretely,
+for a node $n$ over scope $\mathrm{sc}(n)$ with input $s$ restricted to
+that scope:
+\begin{itemize}
+  \item \textbf{Leaf node} over a single variable $X$ with density
+        $p_n(x)$: $\phi_n(s) = \int \exp(isx) \, p_n(x) \, \mathrm{d}x$, which
+        is closed-form for the standard leaf families (Gaussian, categorical,
+        \dots).
+  \item \textbf{Product node} with children $n_1, \dots, n_C$ on disjoint
+        scopes (decomposability): variables in different children are
+        independent, so the CF factorises,
+        $\phi_n(s) = \prod_{c=1}^{C} \phi_{n_c}(s_{\mathrm{sc}(n_c)})$.
+  \item \textbf{Sum node} with weights $w_c \geq 0$, $\sum_c w_c = 1$:
+        the CF is the same convex combination of children's CFs,
+        $\phi_n(s) = \sum_{c=1}^{C} w_c \, \phi_{n_c}(s)$.
+\end{itemize}
+Conditioning on $\xo$ amounts to evaluating the observed-scope leaves at
+$\xo$ and renormalising the sum weights to posterior responsibilities, in
+exact analogy to the GMM case above; the missing-scope evaluation then
+returns $\phi_{\xm \mid \xo}(s)$ in a single bottom-up pass.
+
+\subsection{Gauss--Hermite Quadrature}
+The inner Gaussian expectation is amenable to Gauss--Hermite quadrature, with
+deterministic nodes $\{t_i\}_{i=1}^{N}$ and weights $\{\omega_i\}_{i=1}^{N}$
+such that
+
+\[
+  \int_{-\infty}^{\infty} e^{-t^2} g(t) \, \mathrm{d}t \approx \sum_{i=1}^{N} \omega_i \, g(t_i)
+\]
+
+To use this we need to bring the $\mathcal{N}(0, \gamma)$
+expectation into the form $\int e^{-t^2} g(t)\,\mathrm{d}t$. Writing the
+expectation out as an integral against the Gaussian density gives
+
+\[
+  \E_{u \sim \mathcal{N}(0, \gamma)}[f(u)]
+  = \int_{-\infty}^{\infty} \frac{1}{\sqrt{2\pi\gamma}} \exp \!\left(-\frac{u^2}{2\gamma}\right) f(u) \, \mathrm{d}u.
+\]
+
+Apply the substitution $u = \sqrt{2\gamma}\,t$. It changes three pieces of
+the integrand:
+\begin{itemize}
+  \item the differential: $\mathrm{d}u = \sqrt{2\gamma}\,\mathrm{d}t$,
+  \item the Gaussian exponent: $\dfrac{u^2}{2\gamma} = \dfrac{(\sqrt{2\gamma}\,t)^2}{2\gamma} = \dfrac{2\gamma\, t^2}{2\gamma} = t^2$,
+  \item the argument of $f$: $f(u) = f \!\left(\sqrt{2\gamma}\,t\right)$,
+\end{itemize}
+and the integration limits are unchanged since $\sqrt{2\gamma} > 0$. Plugging
+all three substitutions into the integral:
+\begin{align*}
+  \E_{u \sim \mathcal{N}(0, \gamma)}[f(u)]
+  &= \int_{-\infty}^{\infty} \frac{1}{\sqrt{2\pi\gamma}} \, e^{-t^2} f \!\left(\sqrt{2\gamma}\,t\right) \sqrt{2\gamma} \, \mathrm{d}t \\
+  &= \frac{\sqrt{2\gamma}}{\sqrt{2\pi\gamma}} \int_{-\infty}^{\infty} e^{-t^2} f \!\left(\sqrt{2\gamma}\,t\right) \mathrm{d}t.
+\end{align*}
+The constant prefactor simplifies to
+\[
+  \frac{\sqrt{2\gamma}}{\sqrt{2\pi\gamma}}
+  = \sqrt{\frac{2\gamma}{2\pi\gamma}}
+  = \sqrt{\frac{1}{\pi}}
+  = \frac{1}{\sqrt{\pi}},
+\]
+so the Gaussian expectation becomes
+\[
+  \E_{u \sim \mathcal{N}(0, \gamma)}[f(u)]
+  = \frac{1}{\sqrt{\pi}} \int_{-\infty}^{\infty} e^{-t^2} f \!\left(\sqrt{2\gamma}\,t\right) \mathrm{d}t.
+\]
+
+Which we then can apply by
+\[
+  \E_{u \sim \mathcal{N}(0, \gamma)}[f(u)]
+  \approx \frac{1}{\sqrt{\pi}} \sum_{i=1}^{N} \omega_i\, f \!\left(\sqrt{2\gamma}\,t_i\right).
+\]
+
+Plugging this into the inner expectation of our final formula, with\\
+\[
+  f(u) = \exp \!\left( \frac{1}{8\gamma} + i u \left(\frac{1}{2\gamma} - w_o^T \xo \right) \right) \phi_{\xm \mid \xo}(-u w_m)
+\]
+gives
+
+\[
+  p(y \mid \xo) \approx
+  \frac{1}{2\sqrt{\pi}} \E_{\gamma \sim \PG(1,0)} \left[
+    \sum_{i=1}^{N} \omega_i \,
+    \exp \!\left( \frac{1}{8\gamma} + i \sqrt{2\gamma}\, t_i \left(\frac{1}{2\gamma} - w_o^T \xo \right) \right)
+    \phi_{\xm \mid \xo}\!\left(-\sqrt{2\gamma}\, t_i\, w_m\right)
+  \right]
+\]
+
+\subsection{Algorithm: GMM with Gauss--Hermite}
+
+Putting the pieces together for a diagonal-covariance GMM density and
+the Gauss--Hermite approximation of the inner expectation:
+
+\begin{algorithm}[H]
+\caption{PCPG-GH: expected sigmoid under a GMM with Gauss--Hermite quadrature}
+\label{alg:pcpg-gh}
+\begin{algorithmic}[1]
+\Require LR weights $w$, partial observation $\xo$ (missing entries marked),
+GMM parameters $\{\pi_k, \mu_k, \Sigma_k\}_{k=1}^{K}$,
+PG samples $M$, Hermite order $N$
+\State $(t_i, \omega_i)_{i=1}^{N} \gets \texttt{hermgauss}(N)$
+\Comment{precomputed nodes and weights}
+\State Split $w = (w_o, w_m)$ and $\mu_k = (\mu_k^o, \mu_k^m)$, $\Sigma_k = (\Sigma_k^o, \Sigma_k^m)$ by the observed/missing mask
+\State $\tilde{\pi}_k \gets \dfrac{\pi_k \, \mathcal{N}(\xo;\mu_k^o,\Sigma_k^o)}{\sum_{j}\pi_j \,\mathcal{N}(\xo;\mu_j^o,\Sigma_j^o)}$ \hfill for $k=1,\dots,K$
+\State $c \gets w_o^T \xo$
+\State $S \gets 0$
+\For{$j = 1, \dots, M$}
+  \State Sample $\gamma_j \sim \PG(1, 0)$
+  \For{$i = 1, \dots, N$}
+    \State $u \gets \sqrt{2\gamma_j}\, t_i$
+    \State $s \gets -u\, w_m$
+    \State $\phi \gets \sum_{k=1}^{K} \tilde{\pi}_k \exp \!\left( i s^T \mu_k^m - \tfrac{1}{2} s^T \Sigma_k^m s \right)$
+    \State $\mathrm{factor} \gets \exp \!\left( \dfrac{1}{8\gamma_j} + i u \left( \dfrac{1}{2\gamma_j} - c \right) \right)$
+    \State $S \gets S + \omega_i \cdot \mathrm{factor} \cdot \phi$
+  \EndFor
+\EndFor
+\State \Return $\dfrac{1}{2\sqrt{\pi}\,M} \cdot \mathrm{Re}(S)$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Related Work}
+
+Here, we just focus on works that also try to calculate 
+
+\[
+  \mathbb{E}_{P(\xm \mid \xo)} \left[\sigma(w^T x)\right]
+\]
+
+but use a different approach.
+
+\subsection{Naive Conformant Learning (NaCL)}
+
+\citet{khosravi2019expect} first point out that this expectation is hard
+to compute in general: even with a naive Bayes feature distribution, it
+is NP-hard. They also note that the popular shortcut of mean imputation
+only matches the expectation when the classifier is linear \emph{and} the
+features are independent --- for the sigmoid it is always biased.
+
+Their fix is to pick a feature distribution on which the expectation
+\emph{is} cheap, namely a naive Bayes model over binary features. The
+trick is that naive Bayes and logistic regression are dual to each other:
+every naive Bayes induces a logistic regression, and many naive Bayes
+models induce the same one. They call a naive Bayes \textit{conformant}
+with the given LR if both give the same class probabilities on fully
+observed inputs, and learn such a distribution via geometric programming
+(``naive conformant learning''). Once this naive Bayes is fitted, the
+expected prediction is just a marginal inference query and runs in linear
+time.
+
+\medskip
+\noindent\textbf{Difference to us:} they keep the feature distribution
+simple (naive Bayes on binary inputs) so the expectation is exact and
+cheap; we keep the feature distribution rich (a GMM or PC on continuous
+inputs) and instead use a stochastic trick to handle the sigmoid. They
+also have to refit the feature distribution whenever the classifier
+changes, while ours is trained once and reused.
+
+\subsection{Joint Modelling via SAEM}
+
+\citet{jiang2020logreg} assume a joint Gaussian model on the covariates,
+$x \sim \mathcal{N}(\mu, \Sigma)$, together with logistic regression on
+top. Their main contribution is on the training side: they fit
+$(\mu, \Sigma, \beta)$ jointly from training data that may itself contain
+missing values, using a stochastic-approximation EM algorithm with
+Metropolis--Hastings updates.
+
+For prediction at test time, they simply do plain Monte Carlo: sample
+$x^{m,(s)} \sim p(\xm \mid \xo)$ from the fitted Gaussian and average,
+\[
+  p(y \mid \xo) \approx \frac{1}{S} \sum_{s=1}^{S} p\!\left(y \mid \xo, x^{m,(s)}\right)
+\]
+This is exactly the MC baseline we compare against, just with a single
+Gaussian instead of a mixture as the density.
+
+\medskip
+\noindent\textbf{Difference to us:} they sample the missing features and
+average the sigmoid; we never sample the missing features, but instead
+rewrite the sigmoid so that only the characteristic function of
+$p(\xm \mid \xo)$ is needed. Their feature distribution is also limited
+to a single Gaussian, while ours can capture multimodal shapes.

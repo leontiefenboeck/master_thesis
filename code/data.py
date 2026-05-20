@@ -41,17 +41,12 @@ class DataManager:
     def get_data(self):
         return self.x_train, self.x_test, self.y_train, self.y_test
     
-    def get_test_missing(self, missing_rate=0.1):
-        x_test_missing = self.x_test.copy()
-        
-        n_features = self.x_test.shape[1]
-        n_missing = int(missing_rate * n_features)
-        missing_feature_indices = np.random.choice(n_features, n_missing, replace=False)
-        
-        for idx in missing_feature_indices:
-            x_test_missing[:, idx] = np.nan
-        
-        return x_test_missing, self.y_test.copy()
+    def get_test_missing(self, missing_rate=0.1, idx=0):
+        x = self.x_test[idx].copy()
+        n_missing = int(len(x) * missing_rate)
+        missing_idx = np.random.choice(len(x), n_missing, replace=False)
+        x[missing_idx] = np.nan
+        return x
 
 
  

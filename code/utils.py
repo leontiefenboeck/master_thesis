@@ -1,61 +1,20 @@
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 import torch
 import numpy as np
 import os
+import time
 
 os.makedirs('figures', exist_ok=True)
 
-def plot_2D(*fns, title=None, xmin=-2.5, xmax=2.5, nbins=15):
-
-    x_min, x_max = xmin, xmax
-    y_min, y_max = xmin, xmax
-
-    dx, dy = 0.01, 0.01
-
-    # generate 2 2d grids for the x & y bounds
-    y, x = np.mgrid[slice(x_min, x_max + dy, dy),
-                    slice(y_min, y_max + dx, dx)]
-    xy = torch.from_numpy(np.hstack((x.reshape(-1, 1), y.reshape(-1, 1)))).float()
-
-    fns = [fn for fn in fns if fn is not None]
-
-    ncols = len(fns)
-    if ncols == 0:
-        return
-
-    fig, axs = plt.subplots(ncols=ncols, figsize=(5*ncols, 5))
-    
-    if ncols == 1:
-        axs = [axs]
-
-    for fn, ax in zip(fns, axs):
-        with torch.no_grad():
-            z = fn(xy)
-        z = z.cpu().view(y.shape).numpy()
-        z = z[:-1, :-1]
-        
-        cmap = plt.colormaps['PiYG']
-        
-        levels = MaxNLocator(nbins=nbins).tick_values(z.min(), z.max())
-        cf = ax.contourf(
-            x[:-1, :-1] + dx/2.,
-            y[:-1, :-1] + dy/2., 
-            z, 
-            levels=levels, cmap=cmap
-        )
-        ax.set_aspect('equal', 'box')
-        
-    fig.colorbar(cf, ax=axs)
-    if title is not None:
-        if ncols == 1:
-            axs[-1].set_title(title)
-        else:
-            fig.suptitle(title)
-
-    filename = title.replace(' ', '_').replace('-', '_') + '.png' if title else 'plot_2D.png'
-    plt.savefig(f'figures/{filename}')
-    plt.close()
+def evaluate(name, method, w, x_partial, n_runs=10):
+    vals, times = [], []
+    for _ in range(n_runs):
+        t0 = time.perf_counter()
+        vals.append(method(w, x_partial))
+        times.append(time.perf_counter() - t0)
+    mean, std = np.mean(vals), np.std(vals)
+    mean_t = np.mean(times) * 1000
+    print(f"{name:<10}  p(y=1|x_obs) = {mean:.4f} ± {std:.4f}   ({mean_t:.1f} ms/run) (num runs = {n_runs})")
 
 def plot_data(X, y=None, title=None, xlabel='Feature 1', ylabel='Feature 2'):
     plt.figure(figsize=(6, 6))

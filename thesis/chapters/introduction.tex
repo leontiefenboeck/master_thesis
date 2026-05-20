@@ -1,0 +1,18 @@
+\chapter{Introduction}
+\label{cha:introduction}
+
+
+Probabilistic Modelling is an essential tool in machine learning that uses probability theory to provide a 
+principled mechanism for decision making under uncertainty. Recent progress, especially through models based on deep neural networks like Generative-Adversarial
+Networks (GANs) \cite{gan}, Variational Autoencoders (VAEs) \cite{vae}, Denoising Diffusion Probabilistic Models (DDPMs) \cite{ddpm} and many others, have increased the expressiveness of probabilistic models considerably. 
+However, in machine learning we are not only interested in generating realistic text or images, 
+we also want to reason about data and perform various inference tasks. While probability theory conceptually provides 
+an optimal framework to carry out these tasks, it is often computationally very hard, even more so when dealing 
+with highly complex models as the ones mentioned above \cite{pc_intro}.
+
+A promising research field that addresses this issue are Probabilistic Circuits (PCs). PC is an umbrella term for probabilistic models that, by only introducing 
+complexity in a structured manner, are expressive while at the same time 
+being able to compute many inference tasks exactly and efficiently \cite{pc_intro}. While PCs have demonstrated success in different scenarios, the methods of training them remain 
+an active research topic. Conventionally PCs are trained through Maximum Likelihood Estimation (MLE), often 
+using Gradient Descent and Expectation Maximization as the optimization algorithms. These well-known methods
+provide theoretical robustness, but also have their limitations.

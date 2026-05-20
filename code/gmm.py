@@ -1,4 +1,5 @@
-import torch 
+import time
+import torch
 import torch.nn as nn
 import torch.distributions as dist
 
@@ -18,45 +19,6 @@ class GMM(nn.Module):
         self.means = nn.Parameter(means_init.clone().detach())
         self.log_vars = nn.Parameter(torch.zeros(K, n_features))
 
-    def get_covariances(self):
-        variances = torch.exp(self.log_vars) + 1e-6
-        return torch.diag_embed(variances)
-
-    def conditional_component_log_weights(self, x_partial, observed_mask):
-        if not torch.is_tensor(x_partial):
-            x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.device)
-        else:
-            x_partial = x_partial.to(self.device)
-
-        observed_mask = torch.as_tensor(observed_mask, dtype=torch.bool, device=self.device)
-        if observed_mask.numel() != self.n_features:
-            observed_mask = observed_mask.view(self.n_features)
-
-        base_log_weights = torch.log_softmax(self.pi, dim=-1)
-        if observed_mask.sum() == 0:
-            return base_log_weights
-
-        x_obs = x_partial[observed_mask]
-        mu_obs = self.means[:, observed_mask]
-        var_obs = torch.exp(self.log_vars)[:, observed_mask] + 1e-6
-        log_pdf_obs = dist.Normal(mu_obs, var_obs.sqrt()).log_prob(x_obs).sum(dim=-1)
-
-        return torch.log_softmax(base_log_weights + log_pdf_obs, dim=-1)
-
-    def conditional_mixture_weights(self, x_partial, observed_mask):
-        return torch.softmax(self.conditional_component_log_weights(x_partial, observed_mask), dim=-1)
-
-    def characteristic_function(self, s, weights=None):
-        if weights is None:
-            weights = torch.softmax(self.pi, dim=-1)
-        variances = torch.exp(self.log_vars) + 1e-6
-
-        linear_term = torch.matmul(s, self.means.T)
-        quad_term = torch.matmul(s**2, variances.T)
-        phi_components = torch.exp(1j * linear_term - 0.5 * quad_term)
-
-        return torch.sum(weights * phi_components, dim=-1)
-
     def forward(self, x):
         weights_log_pdf = torch.log_softmax(self.pi, dim=-1)
         variances = torch.exp(self.log_vars) + 1e-6
@@ -65,21 +27,59 @@ class GMM(nn.Module):
         weighted_log_probs = log_probs + weights_log_pdf
         return torch.logsumexp(weighted_log_probs, dim=1)
 
-    def sample(self, num_samples):
-        with torch.no_grad():
-            weights = torch.softmax(self.pi, dim=-1)
-            cat_dist = dist.Categorical(weights)
-            indices = cat_dist.sample((num_samples,))
+    def _component_weights(self, x_obs=None):
+        # Prior softmax(pi) if nothing observed, else posterior p(k | x_obs).
+        if x_obs is None:
+            return torch.softmax(self.pi, dim=-1)
 
-            eps = torch.randn(num_samples, self.n_features, device=self.device)
-            
-            m = self.means[indices]
-            s = torch.exp(0.5 * self.log_vars[indices])
-            
-            return m + eps * s
+        obs_mask = ~torch.isnan(x_obs)
+        stds_obs = torch.sqrt(torch.exp(self.log_vars[:, obs_mask]) + 1e-6)
+        log_lik  = dist.Normal(self.means[:, obs_mask], stds_obs).log_prob(x_obs[obs_mask]).sum(dim=-1)
+
+        return torch.softmax(torch.log_softmax(self.pi, dim=-1) + log_lik, dim=-1)
+
+    def sample(self, num_samples, x_obs=None):
+        with torch.no_grad():
+            weights = self._component_weights(x_obs)
+            indices = dist.Categorical(weights).sample((num_samples,))
+
+            means = self.means[indices]
+            stds  = torch.sqrt(torch.exp(self.log_vars[indices]) + 1e-6)
+            eps   = torch.randn(num_samples, self.n_features, device=self.device)
+            samples = means + eps * stds
+
+            if x_obs is not None:
+                obs_mask = ~torch.isnan(x_obs)
+                samples[:, obs_mask] = x_obs[obs_mask]
+            return samples
+
+    def characteristic_function(self, t, x_obs=None):
+        weights = self._component_weights(x_obs)
+        if x_obs is None:
+            means, variances = self.means, torch.exp(self.log_vars) + 1e-6
+        else:
+            mis_mask  = torch.isnan(x_obs)
+            means     = self.means[:, mis_mask]
+            variances = torch.exp(self.log_vars[:, mis_mask]) + 1e-6
+
+        squeeze = t.dim() == 1
+        if squeeze:
+            t = t.unsqueeze(0)
+
+        t_exp    = t.unsqueeze(1)                          # (N, 1, D_eff)
+        t_dot_mu = (t_exp * means).sum(dim=-1)             # (N, K)
+        t_sq_var = (t_exp**2 * variances).sum(dim=-1)      # (N, K)
+
+        log_cf = torch.complex(-0.5 * t_sq_var, t_dot_mu)
+        cf = (weights * torch.exp(log_cf)).sum(dim=-1)
+        return cf.squeeze(0) if squeeze else cf
+
 
     def fit(self, loader, epochs=50, lr=0.01):
+        print("Fitting GMM...", end=" ", flush=True)
+        t0 = time.perf_counter()
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
         for _ in range(epochs):
             for batch in loader:
                 if isinstance(batch, (tuple, list)): batch = batch[0]
@@ -90,3 +90,5 @@ class GMM(nn.Module):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+
+        print(f"done ({time.perf_counter() - t0:.1f}s)")

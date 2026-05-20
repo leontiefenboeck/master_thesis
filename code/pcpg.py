@@ -3,62 +3,59 @@ from polyagamma import random_polyagamma
 import numpy as np
 
 class PCPG:
-    def __init__(self, model, n_pg=20, n_hermite=10, seed=42):
+    def __init__(self, model, n_pg=100, n_gauss=100, n_hermite=30, seed=42):
         self.model = model
-        self.n_pg = n_pg # number of polygamma samples, TODO: how many?
+        self.n_pg = n_pg
+        self.n_gauss = n_gauss
+        self.n_hermite = n_hermite
         self.seed = seed
-        
-        # Hermite quadrature 
-        nodes, weights = np.polynomial.hermite.hermgauss(n_hermite)
-        self.nodes = torch.tensor(nodes, dtype=torch.float32, device=self.model.device)
-        self.weights = torch.tensor(weights, dtype=torch.float32, device=self.model.device)
 
-    # TODO: am I really supposed to sample this
+        nodes_np, weights_np = np.polynomial.hermite.hermgauss(n_hermite)
+        self.hermite_nodes   = torch.tensor(nodes_np,   dtype=torch.float32, device=model.device)
+        self.hermite_weights = torch.tensor(weights_np, dtype=torch.float32, device=model.device)
+
     def sample_pg(self, n_samples):
         omega = random_polyagamma(1.0, np.zeros(n_samples), random_state=self.seed)
         return torch.tensor(omega, dtype=torch.float32, device=self.model.device)
 
-    def pg_expectation(self, w, known=0.0, component_weights=None):
-        w = w.to(self.model.device)
-        omegas = self.sample_pg(self.n_pg)          # (n_pg,)
-        t = 0.5
-
-        a = t - omegas * known
-        factor_term = torch.exp(t * known - 0.5 * omegas * known**2 + a**2 / (2.0 * omegas))
-        factor_term = factor_term / torch.sqrt(torch.tensor(torch.pi, device=omegas.device))
-
-        s = torch.sqrt(2.0 * omegas).unsqueeze(1) * self.nodes               # (n_pg, n_hermite)
-        s_vector = s.unsqueeze(-1) * w                                         # (n_pg, n_hermite, d)
-
-        phi = self.model.characteristic_function(s_vector, weights=component_weights)
-
-        exp_term = torch.exp(-1j * self.nodes * a.unsqueeze(1) * torch.sqrt(2.0 / omegas).unsqueeze(1))
-        integrand = self.weights.to(phi.device) * exp_term * phi              # (n_pg, n_hermite)
-        g = factor_term * integrand.sum(dim=-1)                               # (n_pg,)
-
-        return 0.5 * g.real.mean()
-
     @torch.no_grad()
-    def marg(self, w):
-        return self.pg_expectation(w)
+    def _expectation(self, w, x_partial, u, gamma, h_weights=None):
+        obs_mask = ~torch.isnan(x_partial)
+        wo, wm = w[obs_mask], w[~obs_mask]
+        wo_xo = wo @ x_partial[obs_mask]
+        inv_gamma = 1.0 / gamma
 
-    @torch.no_grad()
-    def cond(self, w, x_partial):
-        x_partial = torch.as_tensor(x_partial, dtype=torch.float32, device=self.model.device)
-        w = torch.as_tensor(w, dtype=torch.float32, device=self.model.device)
-        observed_mask = ~torch.isnan(x_partial)
+        real = (inv_gamma / 8).expand_as(u)
+        im = u * (0.5 * inv_gamma - wo_xo)
+        factor = torch.exp(torch.complex(real, im))
 
-        if observed_mask.all():
-            return float(torch.sigmoid((w * x_partial).sum()).item())
+        s = torch.outer(-u.flatten(), wm)
+        cf = self.model.characteristic_function(s, x_obs=x_partial)
+        cf = cf.view_as(factor)
 
-        missing_mask = ~observed_mask
-        known = (w[observed_mask] * x_partial[observed_mask]).sum()
+        integrand = factor * cf
+        if h_weights is None:
+            inner = integrand.mean(dim=-1)
+        else:
+            inner = (integrand * h_weights).sum(dim=-1) / np.sqrt(np.pi)
+        return float(0.5 * inner.mean().real)
 
-        w_projected = torch.zeros_like(w, device=self.model.device)
-        w_projected[missing_mask] = w[missing_mask]
+    def pg_expectation(self, w, x_partial):
+        # ω ~ PG(1, 0), then u | ω ~ N(0, ω).
+        gamma = self.sample_pg(self.n_pg)[:, None]
+        u = torch.randn(self.n_pg, self.n_gauss, device=self.model.device) * gamma.sqrt()
+        return self._expectation(w, x_partial, u, gamma)
 
-        component_weights = self.model.conditional_mixture_weights(x_partial, observed_mask)
-        return self.pg_expectation(w_projected, known=known, component_weights=component_weights)
+    def pg_expectation_hermite(self, w, x_partial):
+        # ω ~ PG(1, 0), then u_i = √(2ω)·t_i at Gauss-Hermite nodes.
+        gamma = self.sample_pg(self.n_pg)[:, None]
+        u = (2 * gamma).sqrt() * self.hermite_nodes
+        return self._expectation(w, x_partial, u, gamma, h_weights=self.hermite_weights)
+
+    def __call__(self, w, x_partial):
+        return self.pg_expectation(w, x_partial)
 
 
- 
+class PCPGHermite(PCPG):
+    def __call__(self, w, x_partial):
+        return self.pg_expectation_hermite(w, x_partial)
