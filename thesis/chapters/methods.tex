@@ -250,20 +250,112 @@ gives
   \right]
 \]
 
-\subsection{Algorithm: GMM with Gauss--Hermite}
+\subsection{Gauss--Pólya-Gamma Quadrature}
+\label{subsec:pg-quadrature}
 
-Putting the pieces together for a diagonal-covariance GMM density and
-the Gauss--Hermite approximation of the inner expectation:
+The outer expectation over $\gamma \sim \PG(1,0)$ can likewise be handled
+deterministically by constructing a bespoke quadrature rule for the PG(1,0)
+measure.  The key ingredient is the \emph{Golub--Welsch algorithm}
+\cite{golubwelsch1969}, which produces $n$-point quadrature nodes and weights
+from the first $2n$ moments of any positive measure.
+
+\paragraph{Moments of PG$(1,0)$.}
+The Laplace transform of $\PG(1,0)$ is known in closed form:
+\[
+  \mathcal{L}(t)
+  := \E_{\gamma \sim \PG(1,0)}\!\left[e^{-t\gamma}\right]
+  = \operatorname{sech}\!\left(\sqrt{\tfrac{t}{2}}\right)
+  = \frac{1}{\cosh\!\left(\sqrt{t/2}\right)}.
+\]
+The raw moments follow from derivatives at zero:
+\[
+  \mu_k := \E[\gamma^k] = (-1)^k\, \mathcal{L}^{(k)}(0),
+\]
+which can be evaluated numerically to arbitrary precision
+(we use \texttt{mpmath} at 200 decimal places to avoid catastrophic
+cancellation for large $k$).
+
+\paragraph{Golub--Welsch construction.}
+Given $\mu_0, \dots, \mu_{2n-1}$, the algorithm proceeds as follows.
+Form the $n \times n$ Hankel moment matrices
+\[
+  H_{ij} = \mu_{i+j}, \qquad H'_{ij} = \mu_{i+j+1}, \quad i,j = 0,\dots,n-1.
+\]
+Compute the Cholesky factor $H = R^\top R$ and the Jacobi (tridiagonal) matrix
+\[
+  J = R^{-\top} H' R^{-1}, \quad \text{symmetrised as } J \leftarrow \tfrac{1}{2}(J + J^\top).
+\]
+Eigendecompose $J = V \Lambda V^\top$.  Then the quadrature nodes and weights are
+\[
+  \gamma_j = \lambda_j, \qquad w_j = \mu_0\, v_{0j}^2, \quad j = 1,\dots,n,
+\]
+where $\lambda_j$ are the eigenvalues and $v_{0j}$ is the first component of
+the $j$-th eigenvector.  The resulting rule integrates polynomials in $\gamma$
+exactly up to degree $2n-1$.
+
+\paragraph{Numerical considerations.}
+The Hankel matrix $H$ becomes numerically singular in double precision for
+$n \gtrsim 12$.  We therefore perform the entire Golub--Welsch computation in
+high-precision arithmetic (\texttt{mpmath}, \texttt{dps}$=200$) and convert
+to float\,32 only at the end.  The maximum reliable order is $n = 19$; beyond
+that, eigenvalues become negative at any tested precision.
+
+\paragraph{Fully deterministic formula.}
+Combining Gauss--PG nodes $(\gamma_j, w_j)_{j=1}^{M}$ with Gauss--Hermite
+nodes $(t_i, \omega_i)_{i=1}^{N}$ and applying both quadrature rules to the
+full double expectation yields the \emph{zero-variance} approximation
+\[
+  p(y \mid \xo) \approx
+  \frac{1}{2\sqrt{\pi}} \sum_{j=1}^{M} w_j \sum_{i=1}^{N} \omega_i \,
+  \exp\!\left(\frac{1}{8\gamma_j} + i\sqrt{2\gamma_j}\,t_i
+    \left(\frac{1}{2\gamma_j} - w_o^T \xo\right)\right)
+  \phi_{\xm \mid \xo}\!\left(-\sqrt{2\gamma_j}\,t_i\,w_m\right).
+\]
+
+\subsection{Algorithms}
+
+Putting the pieces together for a diagonal-covariance GMM density.
+Algorithm~\ref{alg:pcpg-mc} uses Monte Carlo for both integrals.
+Algorithm~\ref{alg:pcpg-gh} keeps MC for the outer PG integral but replaces
+the inner Gaussian MC with Gauss--Hermite quadrature, eliminating inner
+variance.
+Algorithm~\ref{alg:pcpg-quad} further replaces the PG Monte Carlo with
+Gauss--PG quadrature, making the estimator fully deterministic.
 
 \begin{algorithm}[H]
-\caption{PCPG-GH: expected sigmoid under a GMM with Gauss--Hermite quadrature}
+\caption{PCPG: expected sigmoid under a GMM, full Monte Carlo}
+\label{alg:pcpg-mc}
+\begin{algorithmic}[1]
+\Require LR weights $w$, partial observation $\xo$ (missing entries marked),
+GMM parameters $\{\pi_k, \mu_k, \Sigma_k\}_{k=1}^{K}$,
+PG samples $M$, Gaussian samples $L$
+\State Split $w = (w_o, w_m)$ and $\mu_k = (\mu_k^o, \mu_k^m)$, $\Sigma_k = (\Sigma_k^o, \Sigma_k^m)$ by the observed/missing mask
+\State $\tilde{\pi}_k \gets \dfrac{\pi_k \, \mathcal{N}(\xo;\mu_k^o,\Sigma_k^o)}{\sum_{j}\pi_j \,\mathcal{N}(\xo;\mu_j^o,\Sigma_j^o)}$ \hfill for $k=1,\dots,K$
+\State $c \gets w_o^T \xo$
+\State $S \gets 0$
+\For{$j = 1, \dots, M$}
+  \State Sample $\gamma_j \sim \PG(1, 0)$
+  \For{$\ell = 1, \dots, L$}
+    \State Sample $u \sim \mathcal{N}(0, \gamma_j)$
+    \State $s \gets -u\, w_m$
+    \State $\phi \gets \sum_{k=1}^{K} \tilde{\pi}_k \exp \!\left( i s^T \mu_k^m - \tfrac{1}{2} s^T \Sigma_k^m s \right)$
+    \State $\mathrm{factor} \gets \exp \!\left( \dfrac{1}{8\gamma_j} + i u \left( \dfrac{1}{2\gamma_j} - c \right) \right)$
+    \State $S \gets S + \mathrm{factor} \cdot \phi$
+  \EndFor
+\EndFor
+\State \Return $\dfrac{1}{2\,M\,L} \cdot \mathrm{Re}(S)$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{PCPG-GH: expected sigmoid under a GMM, MC outer + Gauss--Hermite inner}
 \label{alg:pcpg-gh}
 \begin{algorithmic}[1]
 \Require LR weights $w$, partial observation $\xo$ (missing entries marked),
 GMM parameters $\{\pi_k, \mu_k, \Sigma_k\}_{k=1}^{K}$,
 PG samples $M$, Hermite order $N$
 \State $(t_i, \omega_i)_{i=1}^{N} \gets \texttt{hermgauss}(N)$
-\Comment{precomputed nodes and weights}
+\Comment{deterministic nodes/weights, precomputed once}
 \State Split $w = (w_o, w_m)$ and $\mu_k = (\mu_k^o, \mu_k^m)$, $\Sigma_k = (\Sigma_k^o, \Sigma_k^m)$ by the observed/missing mask
 \State $\tilde{\pi}_k \gets \dfrac{\pi_k \, \mathcal{N}(\xo;\mu_k^o,\Sigma_k^o)}{\sum_{j}\pi_j \,\mathcal{N}(\xo;\mu_j^o,\Sigma_j^o)}$ \hfill for $k=1,\dots,K$
 \State $c \gets w_o^T \xo$
@@ -281,6 +373,244 @@ PG samples $M$, Hermite order $N$
 \State \Return $\dfrac{1}{2\sqrt{\pi}\,M} \cdot \mathrm{Re}(S)$
 \end{algorithmic}
 \end{algorithm}
+
+\begin{algorithm}[H]
+\caption{PCPG-Quad: fully deterministic expected sigmoid under a GMM}
+\label{alg:pcpg-quad}
+\begin{algorithmic}[1]
+\Require LR weights $w$, partial observation $\xo$ (missing entries marked),
+GMM parameters $\{\pi_k, \mu_k, \Sigma_k\}_{k=1}^{K}$,
+PG quadrature order $M$ ($M \leq 19$), Hermite order $N$
+\State $(\gamma_j, w_j)_{j=1}^{M} \gets \texttt{pg\_gauss\_quadrature}(M)$
+\Comment{Golub--Welsch, computed once at high precision; see \S\ref{subsec:pg-quadrature}}
+\State $(t_i, \omega_i)_{i=1}^{N} \gets \texttt{hermgauss}(N)$
+\State Split $w = (w_o, w_m)$ and $\mu_k = (\mu_k^o, \mu_k^m)$, $\Sigma_k = (\Sigma_k^o, \Sigma_k^m)$ by the observed/missing mask
+\State $\tilde{\pi}_k \gets \dfrac{\pi_k \, \mathcal{N}(\xo;\mu_k^o,\Sigma_k^o)}{\sum_{j}\pi_j \,\mathcal{N}(\xo;\mu_j^o,\Sigma_j^o)}$ \hfill for $k=1,\dots,K$
+\State $c \gets w_o^T \xo$
+\State $S \gets 0$
+\For{$j = 1, \dots, M$}
+  \For{$i = 1, \dots, N$}
+    \State $u \gets \sqrt{2\gamma_j}\, t_i$
+    \State $s \gets -u\, w_m$
+    \State $\phi \gets \sum_{k=1}^{K} \tilde{\pi}_k \exp \!\left( i s^T \mu_k^m - \tfrac{1}{2} s^T \Sigma_k^m s \right)$
+    \State $\mathrm{factor} \gets \exp \!\left( \dfrac{1}{8\gamma_j} + i u \left( \dfrac{1}{2\gamma_j} - c \right) \right)$
+    \State $S \gets S + w_j \cdot \omega_i \cdot \mathrm{factor} \cdot \phi$
+  \EndFor
+\EndFor
+\State \Return $\dfrac{1}{2\sqrt{\pi}} \cdot \mathrm{Re}(S)$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Discussion}
+
+\subsection{Variance of the MC Estimator}
+
+The Monte Carlo estimator draws $N$ samples $x^{(i)} \sim p(\xm \mid \xo)$ and returns their average sigmoid value:
+\[
+  \hat{I}_\text{MC} = \frac{1}{N} \sum_{i=1}^{N} \sigma\!\left(w^T x^{(i)}\right).
+\]
+This is a standard sample mean, so its variance is
+\[
+  \operatorname{Var}(\hat{I}_\text{MC}) = \frac{\sigma^2_\text{MC}}{N}, \qquad
+  \sigma^2_\text{MC} = \operatorname{Var}_{x \sim p(x \mid \xo)}\!\left[\sigma(w^T x)\right].
+\]
+Since $\sigma(w^T x) \in (0, 1)$, the variance of any $[0,1]$-valued random variable is at most $\tfrac{1}{4}$ (attained by a Bernoulli$(\tfrac{1}{2})$ distribution), giving the tight upper bound
+\[
+  \operatorname{Var}(\hat{I}_\text{MC}) \leq \frac{1}{4N}.
+\]
+
+\subsection{Variance of the PCPG Estimator}
+
+PCPG is a two-level Monte Carlo estimator. Let $h(\gamma, u)$ denote the integrand
+\[
+  h(\gamma, u) := \operatorname{Re}\!\left[
+    \exp\!\left(\frac{1}{8\gamma} + iu\!\left(\frac{1}{2\gamma} - w_o^T \xo\right)\right)
+    \phi_{\xm \mid \xo}(-u\,w_m)
+  \right],
+\]
+and let $g(\gamma) := \E_{u \sim \mathcal{N}(0,\gamma)}[h(\gamma, u)]$ be the inner expectation.
+The estimator returns
+\[
+  \hat{I}_\text{PCPG} = \frac{1}{2} \cdot \frac{1}{n_{pg}} \sum_{j=1}^{n_{pg}}
+  \underbrace{\frac{1}{n_\text{gauss}} \sum_{k=1}^{n_\text{gauss}} h\!\left(\gamma^{(j)}, u^{(k,j)}\right)}_{\approx\; g(\gamma^{(j)})}.
+\]
+Applying the law of total variance to the inner mean gives
+\[
+  \operatorname{Var}(\hat{I}_\text{PCPG})
+  = \frac{1}{4}\left[
+      \frac{\sigma^2_B}{n_{pg}} + \frac{\sigma^2_A}{n_{pg} \cdot n_\text{gauss}}
+    \right],
+\]
+where
+\begin{align*}
+  \sigma^2_B &= \operatorname{Var}_{\gamma \sim \PG(1,0)}\!\left[g(\gamma)\right],
+  \quad \text{(outer PG variance, irreducible by increasing } n_\text{gauss}\text{)}\\
+  \sigma^2_A &= \E_{\gamma \sim \PG(1,0)}\!\left[\operatorname{Var}_{u \sim \mathcal{N}(0,\gamma)}\!\left[h(\gamma,u)\right]\right].
+  \quad \text{(inner Gaussian variance)}
+\end{align*}
+Unlike the MC case, neither $\sigma^2_A$ nor $\sigma^2_B$ is bounded by $\tfrac{1}{4}$.
+The integrand $h(\gamma, u)$ contains the factor $\exp(1/(8\gamma))$, which grows
+without bound as $\gamma \to 0^+$; since PG$(1,0)$ assigns positive probability to
+arbitrarily small $\gamma$, both variance components are in principle unbounded.
+
+\subsection{Variance of the PCPG-GH Estimator}
+
+PCPG-GH (Algorithm~\ref{alg:pcpg-gh}) replaces the inner Monte Carlo sum with
+Gauss--Hermite quadrature.  Using $N_H$ Hermite nodes $(t_i, \omega_i)$, the inner
+integral is approximated deterministically as
+\[
+  \tilde{g}(\gamma) := \frac{1}{\sqrt{\pi}} \sum_{i=1}^{N_H} \omega_i\,
+  h\!\left(\gamma,\, \sqrt{2\gamma}\,t_i\right) \;\approx\; g(\gamma).
+\]
+The estimator is then a \emph{single-level} Monte Carlo average over the PG draws:
+\[
+  \hat{I}_\text{PCPG-GH} = \frac{1}{2} \cdot \frac{1}{n_{pg}} \sum_{j=1}^{n_{pg}} \tilde{g}\!\left(\gamma^{(j)}\right).
+\]
+There is no inner randomness, so the law of total variance reduces immediately to
+\[
+  \operatorname{Var}(\hat{I}_\text{PCPG-GH})
+  = \frac{1}{4} \cdot \frac{\operatorname{Var}_\gamma[\tilde{g}(\gamma)]}{n_{pg}}
+  \;\xrightarrow{N_H \to \infty}\;
+  \frac{\sigma^2_B}{4\,n_{pg}}.
+\]
+The $\sigma^2_A$ term present in PCPG is entirely eliminated: Gauss--Hermite
+quadrature removes all inner variance at the cost of $N_H$ deterministic CF
+evaluations per PG draw instead of $n_\text{gauss}$ random ones.
+
+\paragraph{Bias of PCPG-GH.}
+Unlike the full-MC PCPG estimator, PCPG-GH is \emph{biased} for any finite $N_H$
+because $\tilde{g}(\gamma) \neq g(\gamma)$ in general:
+\[
+  \operatorname{Bias}(\hat{I}_\text{PCPG-GH})
+  = \frac{1}{2}\,\E_{\gamma \sim \PG(1,0)}\!\left[\tilde{g}(\gamma) - g(\gamma)\right].
+\]
+The inner error $\tilde{g}(\gamma) - g(\gamma)$ is the error of an $N_H$-point
+Gauss--Hermite rule applied to the integral $\int e^{-t^2} h(\gamma, \sqrt{2\gamma}\,t)\,\mathrm{d}t$.
+The classical remainder formula states that for a $2N_H$-times differentiable
+integrand $f$:
+\[
+  \int_{-\infty}^{\infty} e^{-t^2} f(t)\,\mathrm{d}t
+  - \sum_{i=1}^{N_H} \omega_i f(t_i)
+  = \frac{\sqrt{\pi}\,(N_H)!}{2^{2N_H}\,(2N_H)!}\,f^{(2N_H)}(\xi)
+\]
+for some $\xi \in \mathbb{R}$.
+The prefactor $\frac{(N_H)!}{2^{2N_H}(2N_H)!}$ decays super-exponentially in
+$N_H$ (faster than any polynomial), so the inner bias is negligible in practice
+for $N_H \geq 20$: the integrand $h(\gamma, \sqrt{2\gamma}\,t)$ is analytic in
+$t$ (it involves complex exponentials and the GMM CF, which are entire functions),
+so all derivatives exist and are bounded on compact sets.
+In summary, PCPG-GH trades a small, rapidly vanishing systematic error for the
+complete elimination of inner-loop variance.
+
+\subsection{Variance and Bias of the PCPG-Quad Estimator}
+
+PCPG-Quad (Algorithm~\ref{alg:pcpg-quad}) is fully deterministic: both the outer
+PG expectation and the inner Gaussian expectation are replaced by quadrature rules,
+so it has zero variance but nonzero bias from both approximations.
+
+\paragraph{Variance.}
+Since the estimator is deterministic, $\operatorname{Var}(\hat{I}_\text{PCPG-Quad}) = 0$.
+Running it multiple times with the same inputs always returns the same value.
+
+\paragraph{Bias from the inner (Gauss--Hermite) quadrature.}
+The inner approximation $\tilde{g}(\gamma) \approx g(\gamma)$ carries the same
+super-exponentially vanishing error as in PCPG-GH, and is negligible for
+$N_H \geq 20$.
+
+\paragraph{Bias from the outer (Gauss--PG) quadrature.}
+The outer integral $\frac{1}{2}\E_{\gamma \sim \PG(1,0)}[\tilde{g}(\gamma)]$ is
+replaced by the $M$-point quadrature sum $\frac{1}{2}\sum_{j=1}^{M} w_j\,\tilde{g}(\gamma_j)$.
+An $M$-point Gauss quadrature rule for measure $p_\text{PG}$ is exact for
+polynomials in $\gamma$ up to degree $2M-1$.  The integrand $\tilde{g}(\gamma)$
+is not a polynomial: it contains the factor $e^{1/(8\gamma)}$, which has an
+essential singularity at $\gamma = 0$.  Consequently the quadrature error does
+\emph{not} vanish at a polynomial rate but is instead controlled by the
+regularity of $\tilde{g}$ away from the singularity and the concentration of the
+PG$(1,0)$ measure near zero.
+
+The total bias is therefore the sum of the two quadrature errors:
+\[
+  \operatorname{Bias}(\hat{I}_\text{PCPG-Quad})
+  = \underbrace{\frac{1}{2}\,\E_\gamma[\tilde{g}(\gamma) - g(\gamma)]}_{\text{inner (GH), negligible for }N_H \geq 20}
+  +\; \underbrace{\frac{1}{2}\!\left(\sum_{j=1}^{M} w_j\,\tilde{g}(\gamma_j)
+     - \E_\gamma[\tilde{g}(\gamma)]\right)}_{\text{outer (Gauss--PG), decreasing in }M}.
+\]
+
+\paragraph{Bias--variance tradeoff.}
+PCPG-Quad has zero variance and a bias that decreases as $M$ and $N_H$ increase.
+For a fixed evaluation budget of $M \times N_H$ CF calls, the optimal strategy is
+to increase $N_H$ until the inner bias is negligible (cheaply achieved at $N_H \approx 30$)
+and then increase $M$ to drive down the outer bias.
+The hard limit $M \leq 19$ (imposed by numerical precision in the Golub--Welsch
+construction; see \S\ref{subsec:pg-quadrature}) caps the accuracy of
+PCPG-Quad regardless of $N_H$.
+In practice, PCPG-Quad with $M = 15$--$19$ and $N_H = 30$ gives a highly
+accurate, zero-variance estimate that can serve as a reference value against
+which the stochastic estimators are validated.
+
+\subsection{Budget Comparison}
+
+To compare all estimators on equal footing we define a shared \emph{total budget}
+$N$ as the total number of characteristic-function evaluations:
+$N = n_\text{samples}$ for MC,
+$N = n_{pg} \cdot n_\text{gauss}$ for PCPG, and
+$N = n_{pg} \cdot N_H$ for PCPG-GH.
+For PCPG the natural equal-split is $n_{pg} = n_\text{gauss} = \sqrt{N}$;
+for PCPG-GH, fixing $N_H$ and setting $n_{pg} = N / N_H$ gives:
+\[
+  \operatorname{Var}(\hat{I}_\text{PCPG-GH}) \approx \frac{\sigma^2_B \, N_H}{4\,N}.
+\]
+This recovers the $1/N$ rate of MC, with constant $\sigma^2_B N_H / 4$ in place of
+$\sigma^2_\text{MC}$.  The three estimators thus behave as follows at equal budget $N$:
+
+\[
+  \operatorname{Var}(\hat{I}_\text{MC}) = \frac{\sigma^2_\text{MC}}{N}, \qquad
+  \operatorname{Var}(\hat{I}_\text{PCPG}) \sim \frac{\sigma^2_B}{4\sqrt{N}}, \qquad
+  \operatorname{Var}(\hat{I}_\text{PCPG-GH}) \approx \frac{\sigma^2_B N_H}{4N}.
+\]
+
+PCPG (full MC) decays as $1/\sqrt{N}$ and is therefore the least efficient of the
+three.  PCPG-GH and MC both decay as $1/N$; PCPG-GH is preferable to MC when
+$\sigma^2_B N_H < 4\sigma^2_\text{MC}$, i.e.\ when the outer PG variance is small
+relative to the sigmoid variance, but in practice $\sigma^2_B$ is typically
+comparable to $\sigma^2_\text{MC}$ so MC remains more efficient per evaluation.
+The true advantage of the PCPG family over MC is not variance but applicability:
+PCPG requires only the characteristic function of $p(\xm \mid \xo)$, not the
+ability to draw conditional samples.
+A natural equal-split allocation for PCPG sets $n_{pg} = n_\text{gauss} = \sqrt{N}$, giving
+\[
+  \operatorname{Var}(\hat{I}_\text{PCPG}) = \frac{1}{4}\left[
+    \frac{\sigma^2_B}{\sqrt{N}} + \frac{\sigma^2_A}{N}
+  \right]
+  \;\underset{N \to \infty}{\sim}\; \frac{\sigma^2_B}{4\sqrt{N}}.
+\]
+The dominant term decays as $1/\sqrt{N}$, whereas the MC variance decays as $1/N$.
+PCPG is therefore \emph{less} variance-efficient than MC at equal budget under this allocation.
+
+\subsection{Values Outside \texorpdfstring{$[0,1]$}{[0,1]}}
+
+The MC estimator is always in $(0,1)$ because $\sigma$ maps into that interval.
+PCPG, by contrast, computes the real part of a Fourier-type integral approximated
+by Monte Carlo, and individual realisations are \emph{not} constrained to $[0,1]$:
+the estimator can return negative values or values greater than one when $n_{pg}$
+or $n_\text{gauss}$ is small.
+This is not a correctness problem --- the estimator is unbiased and converges to
+a value in $[0,1]$ --- but it is a practical nuisance when the output is
+interpreted as a probability.
+
+\subsection{When is PCPG Preferable?}
+
+The variance comparison above may suggest that PCPG offers no advantage over MC.
+Its value lies elsewhere: PCPG never requires samples from $p(\xm \mid \xo)$.
+It only needs the \emph{characteristic function} of the conditional distribution,
+which is available in closed form for GMMs and general smooth decomposable PCs.
+In settings where drawing conditional samples is expensive or intractable ---
+for instance with non-Gaussian leaf distributions or densely connected circuits ---
+PCPG remains applicable while plain MC does not.
+Furthermore, when the inner integral is handled by Gauss--Hermite quadrature
+(the PCPG-GH variant), the inner variance $\sigma^2_A$ is eliminated entirely,
+reducing the variance to $\sigma^2_B / (4\,n_{pg})$, which matches the $1/N$ rate
+of MC (with $N = n_{pg}$) up to the constant $\sigma^2_B / 4$.
 
 \section{Related Work}
 
@@ -342,3 +672,121 @@ average the sigmoid; we never sample the missing features, but instead
 rewrite the sigmoid so that only the characteristic function of
 $p(\xm \mid \xo)$ is needed. Their feature distribution is also limited
 to a single Gaussian, while ours can capture multimodal shapes.
+
+\section{Why Monte Carlo Alone Is Not Enough}
+\label{sec:why-not-mc}
+
+Monte Carlo estimation of $p(y \mid \xo)$ --- drawing $N$ samples
+$x^{m,(i)} \sim p(\xm \mid \xo)$ and averaging the sigmoid predictions --- is
+unbiased and simple.  However, it has several limitations that become problematic
+in the settings of interest.
+
+\subsection{Conditional Sampling May Be Intractable}
+
+MC requires the ability to \emph{draw samples} from $p(\xm \mid \xo)$.
+For a GMM with diagonal covariances this is straightforward, but for a general
+smooth decomposable PC it is not always tractable.
+Computing the conditional \emph{probability} $p(\xo)$ takes linear time in the
+circuit size, but drawing a sample from $p(\xm \mid \xo)$ requires a top-down
+ancestral pass that branches on sum-node weights recomputed with the evidence.
+For more expressive circuit architectures this pass may be infeasible.
+
+By contrast, the \emph{characteristic function} $\phi_{\xm \mid \xo}(s)$ is
+always tractable for smooth decomposable PCs: it is an expectation of a function
+that factorises over disjoint variable scopes, which PCs are built to handle
+efficiently (see \S\ref{subsec:cf-general-pc}).
+PCPG therefore applies wherever MC does not.
+
+\subsection{Variance Grows with Prediction Uncertainty and Missingness}
+
+The variance of the MC estimator is $\sigma^2_\text{MC}/N$, where
+\[
+  \sigma^2_\text{MC} = \operatorname{Var}_{x \sim p(x \mid \xo)}\!\left[\sigma(w^T x)\right].
+\]
+This quantity is not under our control: it is determined by the problem geometry.
+Two effects make it large in practice.
+
+\paragraph{Proximity to the decision boundary.}
+The sigmoid $\sigma(a)$ has variance (over Bernoulli draws) $\sigma(a)(1-\sigma(a))$,
+which is maximised at $a = 0$ (the decision boundary) and equals $\tfrac{1}{4}$
+there.  Whenever the conditional distribution $p(\xm \mid \xo)$ places
+substantial mass on both sides of the hyperplane $w^T x = 0$, the integrand
+$\sigma(w^T x)$ fluctuates close to its maximum range $[0,1]$, pushing
+$\sigma^2_\text{MC}$ towards $\tfrac{1}{4}$.
+To achieve a standard deviation of $\varepsilon$, one then needs
+$N \geq 1/(4\varepsilon^2)$ samples --- for $\varepsilon = 0.01$ this is
+$N = 2500$, and for $\varepsilon = 0.001$ it is $N = 250{,}000$.
+
+\paragraph{Number of missing features.}
+The linear predictor on the missing coordinates is $w_m^T \xm$, a random
+variable with variance $w_m^T \Sigma_{\xm \mid \xo} w_m$ under the conditional.
+As the number of missing features $d_m = |\{j : x_j \text{ missing}\}|$ grows,
+this variance generally increases (more uncertainty is integrated out), which
+shifts the distribution of $\sigma(w^T x)$ away from the extremes $\{0, 1\}$
+towards the centre, increasing $\sigma^2_\text{MC}$.
+In a high-missingness regime --- common in clinical data, sensor dropout, or
+survey non-response --- the effective number of samples required for a
+fixed precision can be orders of magnitude larger than in the fully-observed
+setting.
+
+\subsection{Gradients Through the Estimate Are Noisy}
+
+If one wishes to \emph{learn} the density model $p_\theta(x)$ jointly with
+the prediction objective --- for instance, by maximising the log-likelihood of
+$p(y \mid \xo)$ over a training set --- then one needs to differentiate
+$\E_{p_\theta(\xm \mid \xo)}[\sigma(w^T x)]$ with respect to $\theta$.
+For an MC estimator, this requires either:
+\begin{itemize}
+  \item the \emph{reparameterisation trick}: $x = f(\theta, \varepsilon)$ for
+        some noise $\varepsilon$ independent of $\theta$, which is not always
+        available for structured or discrete distributions; or
+  \item the \emph{score-function (REINFORCE) estimator}:
+        $\nabla_\theta \E[f(x)] = \E[f(x)\,\nabla_\theta \log p_\theta(x)]$,
+        which is unbiased but notoriously high-variance.
+\end{itemize}
+The PCPG estimator, by contrast, evaluates the conditional CF
+$\phi_{\xm \mid \xo}(s; \theta)$, which is a smooth, differentiable function
+of $\theta$ for any parametric density model.  Gradients of the PCPG estimate
+with respect to $\theta$ are therefore available by automatic differentiation
+without any additional variance-reduction machinery.
+
+\subsection{No Closed Form Exists for the Sigmoid Integral}
+
+Even for the simplest non-trivial density --- a single Gaussian
+$p(\xm \mid \xo) = \mathcal{N}(\mu, \Sigma)$ --- the integral
+\[
+  \E\!\left[\sigma(w^T x) \mid \xo\right]
+  = \int_{-\infty}^{\infty} \sigma(\mu_w + \sigma_w z)\,
+    \frac{e^{-z^2/2}}{\sqrt{2\pi}}\,\mathrm{d}z,
+  \qquad \mu_w = w_m^T\mu,\quad \sigma_w^2 = w_m^T \Sigma w_m,
+\]
+has no closed form.  Approximations exist (e.g.\ replacing $\sigma$ by the
+probit function $\Phi$), but they introduce systematic errors whose magnitude
+is problem-dependent.  For a GMM the approximation must be applied per
+component and the results combined, compounding the error.  This means that
+any accurate, unbiased estimator of the integral must be numerical.
+
+\subsection{Summary}
+
+Table~\ref{tab:method-comparison} summarises how MC and PCPG compare across
+these dimensions.
+
+\begin{table}[h]
+\centering
+\caption{MC vs.\ PCPG for computing $\E[\sigma(w^T x) \mid \xo]$.}
+\label{tab:method-comparison}
+\begin{tabular}{lcc}
+\hline
+& \textbf{Monte Carlo} & \textbf{PCPG (ours)} \\
+\hline
+Unbiased                             & Yes      & Yes (in limit) \\
+Requires sampling from $p(\xm \mid \xo)$ & Yes  & No \\
+Requires CF of $p(\xm \mid \xo)$     & No       & Yes \\
+Variance at budget $N$               & $\sigma^2_\text{MC}/N$ & $\sigma^2_B N_H/(4N)$\rlap{$^*$} \\
+Gradients w.r.t.\ density parameters & Noisy    & Automatic differentiation \\
+Applicable to general PCs            & Limited  & Yes \\
+\hline
+\multicolumn{3}{l}{${}^*$PCPG-GH with $n_{pg} = N/N_H$; full-MC PCPG has additional inner variance.}
+\end{tabular}
+\end{table}
+
