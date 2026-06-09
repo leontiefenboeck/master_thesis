@@ -1,18 +1,13 @@
-import torch
 from polyagamma import random_polyagamma
+from scipy.optimize import nnls
 import numpy as np
+import mpmath
+import torch
 
-class PCPG:
-    def __init__(self, model, n_pg=100, n_gauss=100, n_gauss_quad=30, seed=42):
+class _PCPGBase:
+    def __init__(self, model, seed=42):
         self.model = model
-        self.n_pg = n_pg
-        self.n_gauss = n_gauss
-        self.n_gauss_quad = n_gauss_quad
         self._rng = np.random.default_rng(seed)
-
-        nodes_np, weights_np = np.polynomial.hermite.hermgauss(n_gauss_quad)
-        self.hermite_nodes   = torch.tensor(nodes_np,   dtype=torch.float32, device=model.device)
-        self.hermite_weights = torch.tensor(weights_np, dtype=torch.float32, device=model.device)
 
     def sample_pg(self, n_samples):
         omega = random_polyagamma(1.0, np.zeros(n_samples), random_state=self._rng)
@@ -45,62 +40,88 @@ class PCPG:
             result = (inner * pg_weights).sum()
         return float(0.5 * result.real)
 
-    def pg_expectation(self, w, x_partial):
-        # ω ~ PG(1, 0), then u | ω ~ N(0, ω).
-        gamma = self.sample_pg(self.n_pg)[:, None]
-        u = torch.randn(self.n_pg, self.n_gauss, device=self.model.device) * gamma.sqrt()
+
+class PCPGMC(_PCPGBase):
+    """Both integrals (PG outer, Gaussian inner) estimated by Monte Carlo."""
+
+    def __call__(self, w, x_partial, n_pg=100, n_gauss=100):
+        gamma = self.sample_pg(n_pg)[:, None]
+        u = torch.randn(n_pg, n_gauss, device=self.model.device) * gamma.sqrt()
         return self._expectation(w, x_partial, u, gamma)
 
-    def pg_expectation_hermite(self, w, x_partial):
-        # ω ~ PG(1, 0), then u_i = √(2ω)·t_i at Gauss-Hermite nodes.
-        gamma = self.sample_pg(self.n_pg)[:, None]
+
+class PCPGMCHermite(_PCPGBase):
+    """PG outer integral by MC; Gaussian inner integral by Gauss-Hermite quadrature."""
+
+    def __init__(self, model, n_gauss_quad=30, seed=42):
+        super().__init__(model, seed=seed)
+        nodes_np, weights_np = np.polynomial.hermite.hermgauss(n_gauss_quad)
+        self.hermite_nodes   = torch.tensor(nodes_np,   dtype=torch.float32, device=model.device)
+        self.hermite_weights = torch.tensor(weights_np, dtype=torch.float32, device=model.device)
+
+    def __call__(self, w, x_partial, n_pg=100):
+        gamma = self.sample_pg(n_pg)[:, None]
         u = (2 * gamma).sqrt() * self.hermite_nodes
         return self._expectation(w, x_partial, u, gamma, h_weights=self.hermite_weights)
 
-    def __call__(self, w, x_partial):
-        return self.pg_expectation(w, x_partial)
+def pg_gauss_quadrature(n):
+    mpmath.mp.dps = 200
 
-
-class PCPGMCHermite(PCPG):
-    def __call__(self, w, x_partial):
-        return self.pg_expectation_hermite(w, x_partial)
-
-def pg_quadrature(n, dps=200):
-    import mpmath
-    mpmath.mp.dps = dps
-
-    def L(t):
+    def laplace_transform(t):
         return 1 / mpmath.cosh(mpmath.sqrt(t / 2))
 
-    mu = [mpmath.re(((-1) ** k) * mpmath.diff(L, mpmath.mpf(0), k))
-          for k in range(2 * n)]
+    moments = [mpmath.re(((-1) ** k) * mpmath.diff(laplace_transform, mpmath.mpf(0), k)) for k in range(2 * n)]
 
-    H  = mpmath.matrix([[mu[i + j]     for j in range(n)] for i in range(n)])
-    H1 = mpmath.matrix([[mu[i + j + 1] for j in range(n)] for i in range(n)])
+    def hankel_matrix(offset):
+        return mpmath.matrix([[moments[i + j + offset] for j in range(n)] for i in range(n)])
 
-    R    = mpmath.cholesky(H).T
+    H = hankel_matrix(0)
+    H1 = hankel_matrix(1)
+
+    R = mpmath.cholesky(H).T
     Rinv = mpmath.inverse(R)
-    J    = Rinv.T * H1 * Rinv
-    J    = (J + J.T) / 2
+    J = Rinv.T * H1 * Rinv
+    J = (J + J.T) / 2
 
     eigenvalues, eigenvectors = mpmath.eigh(J)
-    nodes   = np.array([float(eigenvalues[k])                for k in range(n)])
-    weights = np.array([float(mu[0] * eigenvectors[0, k]**2) for k in range(n)])
+    nodes = np.array([float(v) for v in eigenvalues])
+    weights = np.array([float(moments[0] * eigenvectors[0, k] ** 2) for k in range(n)])
     return nodes, weights
 
-class PCPGQuadrature(PCPG):
-    def __init__(self, model, n_pg_quad=20, n_gauss_quad=30, seed=42):
-        super().__init__(model, n_gauss_quad=n_gauss_quad, seed=seed)
-        pg_nodes_np, pg_weights_np = pg_quadrature(n_pg_quad)
+def pg_nnls_quadrature(M=500, R=1500, gamma_min=0.00001, gamma_max=8.0, z_max=20.0):
+    z       = np.linspace(0, z_max, R)
+    gamma   = np.logspace(np.log10(gamma_min), np.log10(gamma_max), M)
+
+    b = 1.0 / np.cosh(np.sqrt(z / 2.0))
+    A = np.exp(-np.outer(z, gamma))
+
+    weights, _ = nnls(A, b)
+    weights = weights.astype(np.float64)
+
+    total = weights.sum()
+    if total > 0:
+        weights /= total
+
+    selected = weights > 1e-14
+    if not selected.any():
+        selected[np.argmax(weights)] = True
+
+    return gamma[selected], weights[selected]
+
+class PCPGQuadrature(_PCPGBase):
+    """Both integrals fully deterministic: Gauss-PG outer, Gauss-Hermite inner."""
+
+    def __init__(self, model, n_pg_quad=10, n_gauss_quad=30, seed=42):
+        super().__init__(model, seed=seed)
+        nodes_np, weights_np = np.polynomial.hermite.hermgauss(n_gauss_quad)
+        self.hermite_nodes   = torch.tensor(nodes_np,   dtype=torch.float32, device=model.device)
+        self.hermite_weights = torch.tensor(weights_np, dtype=torch.float32, device=model.device)
+
+        pg_nodes_np, pg_weights_np = pg_gauss_quadrature(n_pg_quad)
         self.pg_nodes   = torch.tensor(pg_nodes_np,   dtype=torch.float32, device=model.device)
         self.pg_weights = torch.tensor(pg_weights_np, dtype=torch.float32, device=model.device)
 
-    def pg_expectation_quadrature(self, w, x_partial):
+    def __call__(self, w, x_partial):
         gamma = self.pg_nodes[:, None]
         u = (2 * gamma).sqrt() * self.hermite_nodes
-        return self._expectation(w, x_partial, u, gamma,
-                                 h_weights=self.hermite_weights,
-                                 pg_weights=self.pg_weights)
-
-    def __call__(self, w, x_partial):
-        return self.pg_expectation_quadrature(w, x_partial)
+        return self._expectation(w, x_partial, u, gamma, h_weights=self.hermite_weights, pg_weights=self.pg_weights)

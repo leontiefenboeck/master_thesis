@@ -1,0 +1,5 @@
+TODOs:
+
+pcpg in log domain maybe -> LLM thinks this doesnt do anything useful
+why is monte carlo not enough, what is the upside of our approach?
+how to learn with missing data

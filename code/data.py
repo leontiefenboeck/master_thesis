@@ -41,12 +41,17 @@ class DataManager:
     def get_data(self):
         return self.x_train, self.x_test, self.y_train, self.y_test
     
-    def get_test_missing(self, missing_rate=0.1, idx=0):
+    def get_test(self, idx=0, device=None):
+        x = torch.tensor(self.x_test[idx].copy())
+        return x.to(device) if device is not None else x
+
+    def get_test_missing(self, missing_rate=0.1, idx=0, device=None):
         x = self.x_test[idx].copy()
         n_missing = int(len(x) * missing_rate)
         missing_idx = np.random.choice(len(x), n_missing, replace=False)
         x[missing_idx] = np.nan
-        return x
+        x = torch.tensor(x)
+        return x.to(device) if device is not None else x
 
 
  

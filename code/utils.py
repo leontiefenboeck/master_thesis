@@ -2,19 +2,8 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 import os
-import time
 
 os.makedirs('figures', exist_ok=True)
-
-def evaluate(name, method, w, x_partial, n_runs=10):
-    vals, times = [], []
-    for _ in range(n_runs):
-        t0 = time.perf_counter()
-        vals.append(method(w, x_partial))
-        times.append(time.perf_counter() - t0)
-    mean, std = np.mean(vals), np.std(vals)
-    mean_t = np.mean(times) * 1000
-    print(f"{name:<10}  p(y=1|x_obs) = {mean:.4f} ± {std:.4f}   ({mean_t:.1f} ms/run) (num runs = {n_runs})")
 
 def plot_data(X, y=None, title=None, xlabel='Feature 1', ylabel='Feature 2'):
     plt.figure(figsize=(6, 6))
@@ -102,57 +91,75 @@ def plot_classifier_results(clf, X, y, title="Logistic Regression"):
     plt.savefig(f'figures/{filename}')
     plt.close()
 
-def plot_convergence(results, sample_counts, filename='convergence.png'):
-    colors = {'MC': 'steelblue', 'PCPG': 'darkorange', 'PCPG-GH': 'forestgreen'}
-    sample_counts_arr = np.array(sample_counts)
-
+def plot_convergence(results, sample_counts, filename='convergence.png', ylim=None, title=None):
+    _MARKERS = ['o', 's', '^', 'D', 'P', 'X']
+    xs = np.array(sample_counts)
     fig, ax = plt.subplots(figsize=(9, 5))
-    for name, data in results.items():
+    for i, (name, data) in enumerate(results.items()):
         means = np.array(data['means'])
         stds  = np.array(data['stds'])
-        color = colors.get(name, None)
-        ax.plot(sample_counts_arr, means, marker='o', label=name, color=color)
-        ax.fill_between(sample_counts_arr, means - stds, means + stds, alpha=0.2, color=color)
+        line, = ax.plot(xs, means, marker=_MARKERS[i % len(_MARKERS)], markersize=7,
+                        linewidth=2, label=name, zorder=3)
+        ax.fill_between(xs, means - stds, means + stds,
+                        alpha=0.12, color=line.get_color(), zorder=2)
 
     ax.set_xscale('log')
-    ax.set_xlabel('Total budget $N$')
-    ax.set_ylabel(r'$\mathbb{E}[\sigma(w^\top x) \mid x_\mathrm{obs}]$')
-    ax.set_title('Convergence: MC vs PCPG  (mean ± 1 std)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.set_xlabel('Total budget $N$', fontsize=12)
+    ax.set_ylabel(r'$\mathbb{E}[\sigma(w^\top x) \mid x_\mathrm{obs}]$', fontsize=12)
+    ax.set_title(title or r'Estimator convergence  (mean $\pm$ 1 std over runs)', fontsize=13)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    ax.legend(framealpha=0.95, fontsize=11)
+    ax.grid(True, which='major', alpha=0.25)
+    ax.grid(True, which='minor', alpha=0.10, linestyle=':')
+    ax.tick_params(labelsize=10)
 
     os.makedirs('figures', exist_ok=True)
     plt.tight_layout()
     plt.savefig(f'figures/{filename}', dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Saved -> figures/{filename}")
+    plt.close()
+
+def print_variance_components(sigma2_mc, sigma2_B, sigma2_A, pcpg11_vals):
+    arr = np.asarray(pcpg11_vals)
+    print(f"σ²_MC = {sigma2_mc:.4f}  (bound: 0.25)")
+    print(f"σ²_B  = {sigma2_B:.4f}  (outer PG, finite)")
+    print(f"σ²_A  = {sigma2_A:.4f}  (inner Gaussian, ∞ in theory)")
+    print(f"PCPG(1,1) range: [{arr.min():.3f}, {arr.max():.3f}]  "
+          f"({(arr < 0).mean():.1%} < 0,  {(arr > 1).mean():.1%} > 1)")
 
 def plot_variance_analysis(sigma2_mc, sigma2_B, sigma2_A, budgets, results,
-                           filename='variance_analysis.png'):
+                           n_gauss_quad=30, pcpg_ratio=1,
+                           filename='variance_analysis.png', title=None):
     N = np.logspace(np.log10(budgets[0]), np.log10(budgets[-1]), 300)
-    var_mc_pred   = sigma2_mc / N
-    var_pcpg_pred = 0.25 * (sigma2_B / np.sqrt(N) + sigma2_A / N)
+    var_mc_formula   = sigma2_mc / N
+    var_pcpg_formula = 0.25 * (sigma2_B * np.sqrt(pcpg_ratio) / np.sqrt(N) + sigma2_A / N)
+    var_gh_formula   = 0.25 * sigma2_B * n_gauss_quad / N
 
-    budgets_arr        = np.array(budgets)
-    var_mc_empirical   = np.array(results['MC']['stds'])   ** 2
-    var_pcpg_empirical = np.array(results['PCPG']['stds']) ** 2
+    budgets_arr    = np.array(budgets)
+    var_mc_meas    = np.array(results['MC']['stds'])      ** 2
+    var_pcpg_meas  = np.array(results['PCPG']['stds'])    ** 2
+    var_gh_meas    = np.array(results['PCPG-GH']['stds']) ** 2
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.loglog(N, var_mc_pred,   color='steelblue', linestyle='-',
-              label=r'MC analytical: $\sigma^2_{MC}/N$')
-    ax.loglog(N, var_pcpg_pred, color='darkorange', linestyle='-',
-              label=r'PCPG analytical: $\frac{1}{4}\!\left(\frac{\sigma^2_B}{\sqrt{N}}+\frac{\sigma^2_A}{N}\right)$')
-    ax.loglog(budgets_arr, var_mc_empirical,   'o', color='steelblue',  markersize=6, label='MC empirical')
-    ax.loglog(budgets_arr, var_pcpg_empirical, 'o', color='darkorange', markersize=6, label='PCPG empirical')
+    ax.loglog(N, var_mc_formula,   color='#2196F3', linestyle='--')
+    ax.loglog(N, var_pcpg_formula, color='#FF7043', linestyle='--')
+    ax.loglog(N, var_gh_formula,   color='#43A047', linestyle='--')
+    ax.loglog(budgets_arr, var_mc_meas,   'o', color='#2196F3', markersize=6, label='MC')
+    ax.loglog(budgets_arr, var_pcpg_meas, 's', color='#FF7043', markersize=6, label='PCPG')
+    ax.loglog(budgets_arr, var_gh_meas,   '^', color='#43A047', markersize=6, label='PCPG-GH')
 
-    ax.set_xlabel('Total budget $N$')
-    ax.set_ylabel('Variance')
-    ax.set_title(r'Analytical vs empirical variance  ($n_{pg}=n_{gauss}=\sqrt{N}$)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # proxy for dashed "formula" entry
+    ax.plot([], [], 'k--', linewidth=1.5, label='formula')
+
+    ax.set_xlabel('Total budget $N$', fontsize=12)
+    ax.set_ylabel('Variance', fontsize=12)
+    ax.set_title(title or r'Formula vs measured variance', fontsize=13)
+    ax.legend(fontsize=10, framealpha=0.95, loc='upper right')
+    ax.grid(True, which='major', alpha=0.25)
+    ax.grid(True, which='minor', alpha=0.10, linestyle=':')
+    ax.tick_params(labelsize=10)
 
     os.makedirs('figures', exist_ok=True)
     plt.tight_layout()
     plt.savefig(f'figures/{filename}', dpi=150, bbox_inches='tight')
-    plt.show()
-    print(f"Saved -> figures/{filename}")
+    plt.close()

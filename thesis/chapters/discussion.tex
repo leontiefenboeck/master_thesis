@@ -1,4 +1,296 @@
 \chapter{Discussion}
 \label{cha:discussion}
 
-\section{Interpretation of Experimental Results}
+\section{Variance Analysis}
+
+\subsection{Baseline MC Estimator}
+
+The MC estimator draws $N$ samples ${\xm}^{(i)} \sim p(\xm \mid \xo)$ and returns
+\[
+  \widehat{p}_{\mathrm{MC}}(N) = \frac{1}{N}\sum_{i=1}^{N} \sigma\!\left(w^T x^{(i)}\right).
+\]
+Since $\sigma(\cdot) \in (0,1)$, the per-sample variance $\sigma^2_{\mathrm{MC}}
+:= \mathrm{Var}_{p(\xm\mid\xo)}\!\left[\sigma(w^T x)\right]$ is bounded by $1/4$,
+giving
+\[
+  \mathrm{Var}\!\left[\widehat{p}_{\mathrm{MC}}(N)\right]
+  = \frac{\sigma^2_{\mathrm{MC}}}{N}
+  \;\leq\; \frac{1}{4N}.
+\]
+
+\subsection{PCPG-MC Estimator}
+
+The PCPG-MC estimator with $M$ outer (PG) and $L$ inner (Gaussian) samples returns
+\[
+  \widehat{p}_{\mathrm{PCPG}}(M,L)
+  = \frac{1}{2ML}\sum_{j=1}^{M}\sum_{i=1}^{L}
+    \mathrm{Re}\!\left[h(\gamma_j, u_{ij})\right],
+\]
+where
+$h(\gamma, u) := \exp\!\left(\tfrac{1}{8\gamma} + iu\!\left(\tfrac{1}{2\gamma}-c\right)\right)
+\cdot \phi_{\xm\mid\xo}(-uw_m)$,
+$c = w_o^T\xo$, and $u_{ij} \sim \mathcal{N}(0,\gamma_j)$.
+
+\paragraph{Output range.}
+A single sample ($M{=}L{=}1$) returns $\tfrac{1}{2}\mathrm{Re}[h(\gamma,u)]$.
+Since $|\phi| \leq 1$ and $|h(\gamma,u)| = \exp\!\left(\tfrac{1}{8\gamma}\right)$,
+the value lies in $\left[-\tfrac{1}{2}e^{1/(8\gamma)},\, +\tfrac{1}{2}e^{1/(8\gamma)}\right]$.
+Because $\gamma \sim \PG(1,0)$ can be arbitrarily small, $e^{1/(8\gamma)}$ is
+unbounded, so individual PCPG samples are not confined to $[0,1]$ and can be
+negative or exceed 1.
+Empirically, with $M{=}1000$, $L{=}1$ the standard deviation exceeds $0.76$,
+and with $M{=}10{,}000$, $L{=}1$ it exceeds $1.38$.
+By contrast, every individual MC sample lies in $(0,1)$.
+
+\paragraph{Variance decomposition.}
+Define the inner conditional expectation
+$g(\gamma) := \E_{u \sim \mathcal{N}(0,\gamma)}[\mathrm{Re}\,h(\gamma, u)]$
+and two variance components:
+\[
+  \sigma^2_B := \mathrm{Var}_{\gamma \sim \PG(1,0)}\!\left[g(\gamma)\right]
+  \quad\text{(outer)}, \qquad
+  \sigma^2_A := \E_{\gamma}\!\left[\mathrm{Var}_{u|\gamma}\!\left[\mathrm{Re}\,h(\gamma,u)\right]\right]
+  \quad\text{(inner)}.
+\]
+By the law of total variance:
+\[
+  \mathrm{Var}\!\left[\widehat{p}_{\mathrm{PCPG}}(M,L)\right]
+  = \frac{1}{4}\!\left(\frac{\sigma^2_B}{M} + \frac{\sigma^2_A}{ML}\right).
+\]
+These two components behave very differently. $\sigma^2_B$ is \emph{finite}:
+evaluating the Gaussian integral in closed form shows that $g(\gamma)$ remains
+$O(1)$ as $\gamma \to 0$ because the $e^{1/(8\gamma)}$ prefactor in $h$ is
+exactly cancelled by the saddle-point of the Gaussian integral. By contrast,
+$\sigma^2_A$ is \emph{infinite}: for fixed $\gamma$,
+$\mathrm{Var}_{u|\gamma}[\mathrm{Re}\,h] \approx \tfrac{1}{2}e^{1/(4\gamma)}$,
+and the PG density decays only as $\gamma^{-3/4}e^{-1/(8\gamma)}$ near zero,
+so $\E_\gamma[e^{1/(4\gamma)}]$ diverges.
+
+\paragraph{Optimal budget split.}
+Because $\sigma^2_A = \infty$, the formula above breaks down for $L = 1$:
+individual samples $\mathrm{Re}\,h(\gamma, u)$ have unbounded variance due to
+the unmitigated $e^{1/(8\gamma)}$ factor. The inner average $(1/L)\sum_i
+\mathrm{Re}\,h(\gamma, u_i)$ approaches the finite $g(\gamma)$ as $L$
+grows, stabilising the estimator. Therefore, for a fixed budget $N = ML$,
+\emph{more Gaussian inner samples $L$ is better, not more PG samples $M$}.
+This is confirmed empirically: at $N{=}10{,}000$ the standard deviation
+falls from $1.38$ ($M{=}10{,}000$, $L{=}1$) to $0.04$ ($M{=}10$,
+$L{=}1{,}000$). The right strategy is to keep $M$ moderate and let $L$ be
+large. PCPG-GH takes this to its logical conclusion by making $L \to \infty$
+(exact quadrature) for each PG sample.
+
+\subsection{PCPG-GH Estimator}
+
+Replacing the inner MC with $N_H$-point Gauss--Hermite quadrature
+eliminates $\sigma^2_A$ entirely. For a fixed number of PG samples $M$:
+\[
+  \mathrm{Var}\!\left[\widehat{p}_{\mathrm{GH}}(M)\right]
+  = \frac{\sigma^2_B}{4M}.
+\]
+Compared to PCPG-MC with the optimal split ($L{=}1$, same total budget
+$N = M \cdot N_H$ evaluations), PCPG-GH uses $M = N/N_H$ PG samples but
+removes $\sigma^2_A$:
+\[
+  \mathrm{Var}\!\left[\widehat{p}_{\mathrm{GH}}\right]
+  = \frac{N_H\,\sigma^2_B}{4N}
+  \quad\text{vs}\quad
+  \mathrm{Var}\!\left[\widehat{p}_{\mathrm{PCPG}}\right]
+  = \frac{\sigma^2_B + \sigma^2_A}{4N}.
+\]
+PCPG-GH is better when $\sigma^2_A > (N_H - 1)\,\sigma^2_B$, i.e.\ when the
+inner variance is large relative to the outer. In practice, because the
+integrand oscillates heavily for small $\gamma$ (making $\sigma^2_A$ large),
+PCPG-GH tends to substantially reduce overall variance compared to PCPG-MC.
+The outer variance $\sigma^2_B/M$ remains and still exceeds the MC bound
+$\sigma^2_{\mathrm{MC}}/N$.
+
+\subsection{PCPG-Quad Estimator}
+
+Replacing both integrals with quadrature (Golub--Welsch for the outer PG
+integral, Gauss--Hermite for the inner) makes the estimator fully deterministic:
+\[
+  \mathrm{Var}\!\left[\widehat{p}_{\mathrm{Quad}}\right] = 0.
+\]
+The estimator always returns the same value for the same inputs, and its
+output is bounded since the PG quadrature nodes $\gamma_j$ are fixed
+positive numbers --- the factor $e^{1/(8\gamma_j)}$ is a known finite
+constant for each node.
+The error is purely from quadrature approximation (bias), not variance.
+
+\section{Bias Analysis}
+
+\subsection{MC Estimator}
+MC is unbiased for all $N \geq 1$: sampling from $p(\xm \mid \xo)$ and
+averaging $\sigma(w^T x)$ is a direct Monte Carlo estimate of the target
+expectation, so $\E[\widehat{p}_{\mathrm{MC}}(N)] = p(y \mid \xo)$ exactly.
+
+\subsection{PCPG-MC Estimator}
+PCPG-MC is also unbiased. Both integrals are approximated by ordinary MC,
+so by linearity of expectation the estimator equals the true double integral,
+which is $p(y \mid \xo)$ by the PG-sigmoid and Hubbard--Stratonovich
+identities.
+
+\subsection{PCPG-GH Estimator}
+The outer PG integral is still MC (unbiased). The inner integral is replaced
+by Gauss--Hermite quadrature, which introduces a small approximation error.
+For $N_H$ quadrature nodes, GH integrates polynomials of degree up to $2N_H - 1$
+exactly, and for smooth (analytic) integrands the error decays
+super-algebraically in $N_H$. In our setting the integrand is analytic in $u$,
+so the bias is negligible already for small $N_H$ (in practice $N_H \geq 20$
+is sufficient).
+
+\subsection{PCPG-Quad Estimator}
+Both integrals introduce a quadrature error. The Gauss--Hermite inner error
+is the same as for PCPG-GH. The Golub--Welsch PG quadrature with $M$ nodes
+integrates polynomials in $\gamma$ exactly up to degree $2M-1$; for smooth
+functions of $\gamma$ the error again decays rapidly with $M$. The maximum
+reliable order is $M \leq 19$ (limited by numerical precision in the moment
+computation). At $M = 19$ and $N_H \geq 20$, both errors are numerically
+negligible and the output closely matches the unbiased MC ground truth.
+
+\section{Comparison}
+
+Table~\ref{tab:estimator-comparison} summarises the properties of all four
+estimators.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lllll}
+\hline
+\textbf{Estimator} & \textbf{Bias} & \textbf{Variance} & \textbf{Output range} & \textbf{Deterministic} \\
+\hline
+MC           & none  & $\sigma^2_{\mathrm{MC}}/N \leq 1/(4N)$ & $(0,1)$    & no  \\
+PCPG-MC      & none  & $(\sigma^2_B/M + \sigma^2_A/ML)/4$     & unbounded  & no  \\
+PCPG-GH      & small & $\sigma^2_B/(4M)$                      & unbounded  & no  \\
+PCPG-Quad    & small & $0$                                    & fixed      & yes \\
+\hline
+\end{tabular}
+\caption{Summary of estimator properties. $\sigma^2_{\mathrm{MC}} \leq 1/4$ is bounded; $\sigma^2_B$ and $\sigma^2_A$ are not.}
+\label{tab:estimator-comparison}
+\end{table}
+
+\paragraph{Variance.}
+MC has the best variance guarantee: $\sigma^2_{\mathrm{MC}} \leq 1/4$ provides
+a tight universal bound, independent of the model or weights. The PCPG
+estimators have no such bound --- both $\sigma^2_B$ and $\sigma^2_A$ depend
+on the problem and can be large. In the experiments, PCPG-MC with an equal
+split yields $\sim$26$\times$ higher standard deviation than MC at the same
+budget. PCPG-GH narrows but does not close this gap.
+PCPG-Quad has zero variance by construction.
+
+\paragraph{Bias.}
+MC and PCPG-MC are exactly unbiased. PCPG-GH and PCPG-Quad introduce small
+quadrature errors that are negligible at the parameter choices used
+($N_H \geq 20$, $M_{\mathrm{PG}} \leq 19$).
+
+\paragraph{When to use which.}
+MC is the simplest and most reliable choice when the density $p(\xm \mid \xo)$
+is easy to sample from and low variance is the priority.
+PCPG-MC becomes preferable when sampling is difficult but evaluating the
+characteristic function of $p(\xm \mid \xo)$ is cheap (as with a GMM), since
+PCPG never samples the missing features directly.
+PCPG-GH is a direct improvement over PCPG-MC: it eliminates inner variance
+at no extra cost for the same outer budget, and should be preferred whenever
+$\sigma^2_A$ is non-negligible.
+PCPG-Quad is the right choice when a fully deterministic, reproducible result
+is required --- for example when differentiating through the estimator or when
+multiple evaluations at the same point must agree exactly.
+
+
+\section{Effect of Dimensionality}
+
+The number of missing features $d_m$ affects the two families of estimators in
+opposite ways.
+
+\paragraph{MC.}
+The per-sample variance $\sigma^2_{\mathrm{MC}} = \mathrm{Var}[\sigma(w^T x)]$
+grows with $d_m$: more missing features make $w^T x$ more random, spreading the
+distribution of $\sigma(w^T x)$ and pushing $\sigma^2_{\mathrm{MC}}$ toward its
+upper bound of $1/4$. The variance of the MC estimator therefore increases with
+dimensionality.
+
+\paragraph{PCPG.}
+The situation is reversed. For a GMM with diagonal covariance the characteristic
+function at frequency $s = -u w_m$ contains the damping factor
+\[
+  \left|\varphi(-u w_m \mid \xo)\right|
+  \;\leq\; \exp\!\left(-\tfrac{1}{2}u^2 \sum_{j \in \mathrm{mis}} w_j^2 \sigma_{kj}^2\right),
+\]
+where the exponent grows with $d_m$. This means the CF decays faster in $u$ as
+more features are missing, concentrating the integrand near $u = 0$ where the
+$e^{1/(8\gamma)}$ blowup from small $\gamma$ is suppressed. As a result,
+$\sigma^2_A$ (the inner variance) decreases with $d_m$, and $\sigma^2_B$ is also
+damped. The PCPG estimators become \emph{more} accurate, not less, as
+dimensionality grows.
+
+The same damping also reduces the Gauss--Hermite quadrature error for PCPG-GH:
+a narrower integrand is easier to approximate with a fixed number of nodes, so
+the bias of PCPG-GH decreases with $d_m$ as well.
+
+\paragraph{Summary.}
+MC variance increases toward $1/(4N)$ as $d_m$ grows, while PCPG variance
+decreases due to CF concentration. The relative advantage of PCPG over MC
+therefore improves with the number of missing features, which is precisely the
+high-missing-data regime where accurate marginalisation matters most.
+
+\section{Related Work}
+
+Here, we just focus on works that also try to calculate 
+
+\[
+  \mathbb{E}_{P(\xm \mid \xo)} \left[\sigma(w^T x)\right]
+\]
+
+but use a different approach.
+
+\subsection{Naive Conformant Learning (NaCL)}
+
+\citet{khosravi2019expect} first point out that this expectation is hard
+to compute in general: even with a naive Bayes feature distribution, it
+is NP-hard. They also note that the popular shortcut of mean imputation
+only matches the expectation when the classifier is linear \emph{and} the
+features are independent --- for the sigmoid it is always biased.
+
+Their fix is to pick a feature distribution on which the expectation
+\emph{is} cheap, namely a naive Bayes model over binary features. The
+trick is that naive Bayes and logistic regression are dual to each other:
+every naive Bayes induces a logistic regression, and many naive Bayes
+models induce the same one. They call a naive Bayes \textit{conformant}
+with the given LR if both give the same class probabilities on fully
+observed inputs, and learn such a distribution via geometric programming
+(``naive conformant learning''). Once this naive Bayes is fitted, the
+expected prediction is just a marginal inference query and runs in linear
+time.
+
+\medskip
+\noindent\textbf{Difference to us:} they keep the feature distribution
+simple (naive Bayes on binary inputs) so the expectation is exact and
+cheap; we keep the feature distribution rich (a GMM or PC on continuous
+inputs) and instead use a stochastic trick to handle the sigmoid. They
+also have to refit the feature distribution whenever the classifier
+changes, while ours is trained once and reused.
+
+\subsection{Joint Modelling via SAEM}
+
+\citet{jiang2020logreg} assume a joint Gaussian model on the covariates,
+$x \sim \mathcal{N}(\mu, \Sigma)$, together with logistic regression on
+top. Their main contribution is on the training side: they fit
+$(\mu, \Sigma, \beta)$ jointly from training data that may itself contain
+missing values, using a stochastic-approximation EM algorithm with
+Metropolis--Hastings updates.
+
+For prediction at test time, they simply do plain Monte Carlo: sample
+$x^{m,(s)} \sim p(\xm \mid \xo)$ from the fitted Gaussian and average,
+\[
+  p(y \mid \xo) \approx \frac{1}{S} \sum_{s=1}^{S} p\!\left(y \mid \xo, x^{m,(s)}\right)
+\]
+This is exactly the MC baseline we compare against, just with a single
+Gaussian instead of a mixture as the density.
+
+\medskip
+\noindent\textbf{Difference to us:} they sample the missing features and
+average the sigmoid; we never sample the missing features, but instead
+rewrite the sigmoid so that only the characteristic function of
+$p(\xm \mid \xo)$ is needed. Their feature distribution is also limited
+to a single Gaussian, while ours can capture multimodal shapes.
