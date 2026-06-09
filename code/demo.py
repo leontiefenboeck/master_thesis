@@ -1,6 +1,5 @@
 import random
 import time
-
 import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
@@ -9,15 +8,14 @@ from baselines import MCBaseline
 from data import DataManager
 from gmm import GMM
 from pcpg import PCPGMC, PCPGMCHermite, PCPGQuadrature
-from utils import (plot_convergence, plot_variance_analysis,
-                   print_variance_components)
+from utils import *
+
+pcpg_ratio   = 5   
+n_pg         = 100
+n_gauss      = n_pg * pcpg_ratio
 
 n_gauss_quad = 20
 n_pg_quad    = 20
-n_gauss      = 100
-n_pg         = 100
-
-pcpg_ratio   = 5   
 
 K = 4
 n_features = 10
@@ -55,6 +53,10 @@ pcpg_quad = PCPGQuadrature(px, n_pg_quad=n_pg_quad, n_gauss_quad=n_gauss_quad)
 # ── evaluation ──────────────────────────────────────────────────────────────────
 
 def eval_estimators():
+    x_complete = dm.get_test(idx=5, device=device)
+    true_val   = float(torch.sigmoid(w @ x_complete))
+    print(f"{'True σ(wᵀx)':<28}  {true_val:.4f}")
+
     def evaluate(name, fn, n_runs=10):
         t0   = time.perf_counter()
         vals = [fn() for _ in range(n_runs)]
@@ -136,6 +138,6 @@ def variance_analysis():
 
 # ── run ───────────────────────────────────────────────────────────────────────
 
-# eval_estimators()
+eval_estimators()
 # allocation_analysis()
-variance_analysis()
+# variance_analysis()

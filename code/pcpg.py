@@ -13,8 +13,8 @@ class _PCPGBase:
         omega = random_polyagamma(1.0, np.zeros(n_samples), random_state=self._rng)
         return torch.tensor(omega, dtype=torch.float32, device=self.model.device)
 
-    @torch.no_grad()
-    def _expectation(self, w, x_partial, u, gamma, h_weights=None, pg_weights=None):
+    def _expectation_diff(self, w, x_partial, u, gamma, h_weights=None, pg_weights=None):
+        """Compute E[σ(wᵀx) | x_obs] as a scalar tensor; gradients flow through w."""
         obs_mask = ~torch.isnan(x_partial)
         wo, wm = w[obs_mask], w[~obs_mask]
         wo_xo = wo @ x_partial[obs_mask]
@@ -38,7 +38,11 @@ class _PCPGBase:
             result = inner.mean()
         else:
             result = (inner * pg_weights).sum()
-        return float(0.5 * result.real)
+        return 0.5 * result.real
+
+    @torch.no_grad()
+    def _expectation(self, w, x_partial, u, gamma, h_weights=None, pg_weights=None):
+        return float(self._expectation_diff(w, x_partial, u, gamma, h_weights, pg_weights))
 
 
 class PCPGMC(_PCPGBase):
@@ -125,3 +129,16 @@ class PCPGQuadrature(_PCPGBase):
         gamma = self.pg_nodes[:, None]
         u = (2 * gamma).sqrt() * self.hermite_nodes
         return self._expectation(w, x_partial, u, gamma, h_weights=self.hermite_weights, pg_weights=self.pg_weights)
+
+
+class PCPGMCHermiteDiff(PCPGMCHermite):
+    """PCPGMCHermite with gradient support for training w.
+
+    Identical to PCPGMCHermite but exposes a forward() that returns a scalar
+    tensor so gradients can flow through w during classifier training.
+    """
+
+    def forward(self, w, x_partial, n_pg: int = 50):
+        gamma = self.sample_pg(n_pg)[:, None]
+        u = (2 * gamma).sqrt() * self.hermite_nodes
+        return self._expectation_diff(w, x_partial, u, gamma, h_weights=self.hermite_weights)

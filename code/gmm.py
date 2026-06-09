@@ -20,12 +20,16 @@ class GMM(nn.Module):
         self.log_vars = nn.Parameter(torch.zeros(K, n_features))
 
     def forward(self, x):
-        weights_log_pdf = torch.log_softmax(self.pi, dim=-1)
-        variances = torch.exp(self.log_vars) + 1e-6
-        log_probs = dist.Normal(self.means, variances.sqrt()).log_prob(x.unsqueeze(1)).sum(dim=-1)
+        weights_log = torch.log_softmax(self.pi, dim=-1)
+        variances   = torch.exp(self.log_vars) + 1e-6
 
-        weighted_log_probs = log_probs + weights_log_pdf
-        return torch.logsumexp(weighted_log_probs, dim=1)
+        x_filled = x.clone()
+        x_filled[torch.isnan(x)] = 0.0
+
+        log_p_feat = dist.Normal(self.means, variances.sqrt()).log_prob(x_filled.unsqueeze(1))
+        log_p_feat = log_p_feat * (~torch.isnan(x)).float().unsqueeze(1)
+
+        return torch.logsumexp(weights_log + log_p_feat.sum(dim=-1), dim=-1)
 
     def _component_weights(self, x_obs=None):
         # Prior softmax(pi) if nothing observed, else posterior p(k | x_obs).
@@ -74,10 +78,9 @@ class GMM(nn.Module):
         cf = (weights * torch.exp(log_cf)).sum(dim=-1)
         return cf.squeeze(0) if squeeze else cf
 
-
     def fit(self, loader, epochs=50, lr=0.01):
         print("Fitting GMM...", end=" ", flush=True)
-        t0 = time.perf_counter()
+        t0        = time.perf_counter()
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         for _ in range(epochs):
@@ -85,8 +88,7 @@ class GMM(nn.Module):
                 if isinstance(batch, (tuple, list)): batch = batch[0]
                 batch = batch.to(self.device)
 
-                loss = -torch.mean(self(batch))
-
+                loss = -self(batch).mean()
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()

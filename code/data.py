@@ -53,5 +53,27 @@ class DataManager:
         x = torch.tensor(x)
         return x.to(device) if device is not None else x
 
+    def get_missing_loader(self, missing_rate=0.3, batch_size=64, seed=42):
+        """Training DataLoader with features independently set to NaN at rate missing_rate."""
+        rng    = np.random.default_rng(seed)
+        x_miss = self.x_train.astype(np.float32).copy()
+        x_miss[rng.random(x_miss.shape) < missing_rate] = np.nan
+        dataset = TensorDataset(
+            torch.from_numpy(x_miss),
+            torch.from_numpy(self.y_train),
+        )
+        return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    def get_test_missing_batch(self, missing_rate=0.3, seed=42, device=None):
+        """Returns (x_test, y_test) tensors with features independently set to NaN."""
+        rng    = np.random.default_rng(seed)
+        x_miss = self.x_test.astype(np.float32).copy()
+        x_miss[rng.random(x_miss.shape) < missing_rate] = np.nan
+        x_t = torch.from_numpy(x_miss)
+        y_t = torch.from_numpy(self.y_test)
+        if device is not None:
+            return x_t.to(device), y_t.to(device)
+        return x_t, y_t
+
 
  
