@@ -18,7 +18,8 @@ n_gauss_quad = 20
 n_pg_quad    = 20
 
 K = 4
-n_features = 10
+n_features = 20
+missing_rate = 0.4
 
 # ── setup ─────────────────────────────────────────────────────────────────────
 
@@ -42,7 +43,7 @@ clf = LogisticRegression()
 clf.fit(x_train, y_train)
 w = torch.tensor(clf.coef_[0], dtype=torch.float32, device=device)
 
-x_partial = dm.get_test_missing(missing_rate=0.5, idx=5, device=device)
+x_partial = dm.get_test_missing(missing_rate=(1-missing_rate), idx=5, device=device)
 print(f"Missing features: {torch.isnan(x_partial).sum().item()} / {n_features}\n")
 
 mc        = MCBaseline(px)
@@ -117,8 +118,8 @@ def variance_analysis():
             results[name]["stds"].append(np.std(vals))
 
     plot_convergence(results, convergence_budgets,
-                     filename=f'convergence_{n_features}feat.png',
-                     title=rf'Estimator convergence  ({n_features} features, mean $\pm$ 1 std)')
+                     filename=f'convergence{int(missing_rate * n_features)}_{n_features}features.png',
+                     title=rf'Estimator convergence ({int(missing_rate * n_features)}/{n_features} features, mean $\pm$ 1 std)')
     
     n_reps = 1000
     
@@ -133,11 +134,11 @@ def variance_analysis():
     print_variance_components(sigma2_mc, sigma2_B, sigma2_A, pcpg11_vals)
     plot_variance_analysis(sigma2_mc, sigma2_B, sigma2_A, convergence_budgets, results,
                            n_gauss_quad=n_gauss_quad, pcpg_ratio=pcpg_ratio,
-                           filename=f'variance_analysis_{n_features}feat.png',
-                           title=f'Formula vs measured variance  ({n_features} features)')
+                           filename=f'variance{int(missing_rate * n_features)}_{n_features}features.png',
+                           title=f'Formula vs measured variance  ({int(missing_rate * n_features)}/{n_features} features)')
 
 # ── run ───────────────────────────────────────────────────────────────────────
 
-eval_estimators()
+# eval_estimators()
 # allocation_analysis()
-# variance_analysis()
+variance_analysis()

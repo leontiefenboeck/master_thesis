@@ -56,6 +56,12 @@ To get rid of the quadratic form, we apply the Hubbard--Stratonovich identity \c
     \exp \left( -\tfrac{1}{2} a h^2 \right) = \sqrt{  \frac{1}{2 \pi a}} \int_{-\infty}^{\infty} \exp \left(-\frac{u^2}{2a} -i h u\right) \mathrm{d}u,
 \end{equation}
 
+Since $\frac{1}{\sqrt{2\pi a}}\exp\!\left(-\frac{u^2}{2a}\right)$ is the density of $\mathcal{N}(0,a)$, the integral is
+exactly the expectation of $e^{-ihu}$ over $u \sim \mathcal{N}(0,a)$:
+\begin{equation}
+    \exp \left( -\tfrac{1}{2} a h^2 \right) = \E_{u \sim \mathcal{N}(0,\,a)}\!\left[ e^{-ihu} \right].
+\end{equation}
+
 In plain words, it makes a quadratic term linear at the cost of introducing a helper variable that we need to integrate over.
 
 Currently, in our term, $x$ appears quadratically as well as linearly. To be able to apply HS, we complete the square (again using $z = w^T x$):

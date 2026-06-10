@@ -68,7 +68,7 @@ class PCPGMCHermite(_PCPGBase):
         u = (2 * gamma).sqrt() * self.hermite_nodes
         return self._expectation(w, x_partial, u, gamma, h_weights=self.hermite_weights)
 
-def pg_gauss_quadrature(n):
+def pg_gw_quadrature(n):
     mpmath.mp.dps = 200
 
     def laplace_transform(t):
@@ -121,7 +121,7 @@ class PCPGQuadrature(_PCPGBase):
         self.hermite_nodes   = torch.tensor(nodes_np,   dtype=torch.float32, device=model.device)
         self.hermite_weights = torch.tensor(weights_np, dtype=torch.float32, device=model.device)
 
-        pg_nodes_np, pg_weights_np = pg_gauss_quadrature(n_pg_quad)
+        pg_nodes_np, pg_weights_np = pg_gw_quadrature(n_pg_quad)
         self.pg_nodes   = torch.tensor(pg_nodes_np,   dtype=torch.float32, device=model.device)
         self.pg_weights = torch.tensor(pg_weights_np, dtype=torch.float32, device=model.device)
 
